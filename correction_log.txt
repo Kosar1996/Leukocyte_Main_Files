@@ -1,0 +1,26 @@
+run_input_full2D_pressure2
+
+Running Softlubrication hybrid gap-1D / exterior-2D pressure case
+   dt                  = 3.000000e-04 s
+   tEnd                = 3.000000e-04 s
+   requested steps     = 1
+   z-domain            = [-6.000, 10.000] um
+   exterior radius     = 4.000 um
+   1D gap window       = [-0.200, 4.200] um
+   exterior 2D radial Nr = 20
+
+FULL-DOF ANALYTICAL-JACOBIAN RUN: dt=3.000e-04, full DOFs, adaptive retry on.
+2D MAC/deformable-leukocyte mode: full2D=on, fixedCylinder=off, prestressedLeukocyte=on, exactInterface=on, global2DPressureTraction=off, hybridGap1DExterior2D=off.
+Using prestressed leukocyte initial state from solid_leu_P600.mat
+   two-solid fsolve exitflag=3, iterations=7, scaledRes=5.567e-12, RE=3.502e-20, RL=5.567e-19, RF=1.838e-20, gap=3.105e-07
+Time step 1 (t=3.0000e-04, dt=3.000e-04): min(deltaE)=3.272456e-06, max|p|=1.038648e+02, max|du|=8.454e-08, max|dp|=1.039e+02, retries=0
+   min gap after accepted step = 3.104902e-07 m
+   diagnostics: fluidRes=6.761e-10, globalMass=1.879e-16, dV/V=2.390e-03, fluxJump=-3.274e-16, sourceInt=-5.152e-16
+   geometry: JEmin=9.292e-01, rEmin=3.281e-06 m, JLmin=6.827e-01, rLmin=2.998e-08 m
+
+Hybrid gap-1D / exterior-2D pressure run finished
+   stopStep = 1
+   final t  = 3.000000e-04 s
+   native P range = [-1.932735e+00, 1.041002e+02] Pa
+   final max |P2D| = 1.041002e+02 Pa
+diary off;

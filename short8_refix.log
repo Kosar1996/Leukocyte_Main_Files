@@ -1,0 +1,299 @@
+
+Running Softlubrication hybrid gap-1D / exterior-2D pressure case
+   dt                  = 3.000000e-04 s
+   tEnd                = 2.400000e-03 s
+   requested steps     = 8
+   z-domain            = [-6.000, 10.000] um
+   exterior radius     = 4.000 um
+   1D gap window       = [-0.200, 4.200] um
+   exterior 2D radial Nr = 20
+
+FULL-DOF ANALYTICAL-JACOBIAN RUN: dt=3.000e-04, full DOFs, adaptive retry on.
+2D MAC/deformable-leukocyte mode: full2D=on, fixedCylinder=off, prestressedLeukocyte=on, exactInterface=on, global2DPressureTraction=off, hybridGap1DExterior2D=on.
+Using prestressed leukocyte initial state from solid_leu_P600.mat
+   two-solid fsolve exitflag=3, iterations=8, scaledRes=7.423e-12, RE=6.630e-20, RL=7.423e-19, RF=1.716e-20, gap=1.119e-07
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+Time step 1 (t=3.0000e-04, dt=3.000e-04): min(deltaE)=3.292817e-06, max|p|=1.661784e+02, max|du|=6.754e-08, max|dp|=1.662e+02, retries=0
+   min gap after accepted step = 1.119416e-07 m
+   diagnostics: fluidRes=1.261e-20, globalMass=6.658e-28, dV/V=1.118e-02, fluxJump=-2.083e-15, sourceInt=-2.083e-15
+   geometry: JEmin=9.294e-01, rEmin=3.270e-06 m, JLmin=6.823e-01, rLmin=2.987e-08 m
+   two-solid fsolve exitflag=3, iterations=6, scaledRes=2.117e-11, RE=1.429e-19, RL=2.117e-18, RF=1.140e-20, gap=1.006e-07
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+Time step 2 (t=6.0000e-04, dt=3.000e-04): min(deltaE)=3.309487e-06, max|p|=1.618658e+02, max|du|=6.165e-08, max|dp|=5.475e+00, retries=0
+   min gap after accepted step = 1.006146e-07 m
+   diagnostics: fluidRes=1.115e-20, globalMass=1.870e-27, dV/V=9.659e-03, fluxJump=-1.819e-15, sourceInt=-1.819e-15
+   geometry: JEmin=9.299e-01, rEmin=3.284e-06 m, JLmin=6.873e-01, rLmin=3.046e-08 m
+   two-solid fsolve exitflag=3, iterations=6, scaledRes=1.463e-11, RE=1.018e-19, RL=1.463e-18, RF=1.380e-20, gap=9.197e-08
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+Time step 3 (t=9.0000e-04, dt=3.000e-04): min(deltaE)=3.324149e-06, max|p|=1.583981e+02, max|du|=5.644e-08, max|dp|=4.502e+00, retries=0
+   min gap after accepted step = 9.196664e-08 m
+   diagnostics: fluidRes=9.506e-21, globalMass=-8.153e-28, dV/V=8.616e-03, fluxJump=-1.638e-15, sourceInt=-1.638e-15
+   geometry: JEmin=9.305e-01, rEmin=3.297e-06 m, JLmin=6.921e-01, rLmin=3.101e-08 m
+   two-solid fsolve exitflag=4, iterations=26, scaledRes=1.890e-05, RE=1.890e-12, RL=1.710e-12, RF=5.098e-14, gap=9.363e-08
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+Time step 4 (t=1.2000e-03, dt=3.000e-04): min(deltaE)=3.329267e-06, max|p|=1.540049e+02, max|du|=3.876e-08, max|dp|=9.321e+00, retries=0
+   min gap after accepted step = 9.363407e-08 m
+   diagnostics: fluidRes=9.349e-21, globalMass=-1.529e-27, dV/V=3.026e-03, fluxJump=-5.803e-16, sourceInt=-5.803e-16
+   geometry: JEmin=9.313e-01, rEmin=3.300e-06 m, JLmin=6.970e-01, rLmin=3.145e-08 m
+   two-solid fsolve exitflag=4, iterations=13, scaledRes=2.923e-04, RE=2.426e-11, RL=2.923e-11, RF=2.602e-12, gap=8.675e-08
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+Time step 5 (t=1.5000e-03, dt=3.000e-04): min(deltaE)=3.326572e-06, max|p|=1.519513e+02, max|du|=6.447e-09, max|dp|=2.955e+00, retries=0
+   min gap after accepted step = 8.674991e-08 m
+   diagnostics: fluidRes=1.026e-20, globalMass=1.514e-27, dV/V=2.789e-03, fluxJump=5.365e-16, sourceInt=5.365e-16
+   geometry: JEmin=9.324e-01, rEmin=3.298e-06 m, JLmin=7.025e-01, rLmin=3.153e-08 m
+   two-solid fsolve exitflag=4, iterations=23, scaledRes=6.637e-04, RE=5.352e-11, RL=5.266e-11, RF=6.637e-12, gap=7.702e-08
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+Time step 6 (t=1.8000e-03, dt=3.000e-04): min(deltaE)=3.322810e-06, max|p|=1.471131e+02, max|du|=4.609e-09, max|dp|=4.838e+00, retries=0
+   min gap after accepted step = 7.702466e-08 m
+   diagnostics: fluidRes=9.399e-21, globalMass=-6.084e-28, dV/V=2.688e-03, fluxJump=5.157e-16, sourceInt=5.157e-16
+   geometry: JEmin=9.332e-01, rEmin=3.298e-06 m, JLmin=7.078e-01, rLmin=3.155e-08 m
+   two-solid fsolve exitflag=4, iterations=28, scaledRes=7.019e-04, RE=5.544e-11, RL=5.210e-11, RF=7.019e-12, gap=6.759e-08
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+Time step 7 (t=2.1000e-03, dt=3.000e-04): min(deltaE)=3.319056e-06, max|p|=1.418462e+02, max|du|=4.227e-09, max|dp|=5.267e+00, retries=0
+   min gap after accepted step = 6.759038e-08 m
+   diagnostics: fluidRes=9.124e-21, globalMass=6.922e-29, dV/V=2.473e-03, fluxJump=4.731e-16, sourceInt=4.731e-16
+   geometry: JEmin=9.339e-01, rEmin=3.297e-06 m, JLmin=7.130e-01, rLmin=3.156e-08 m
+   two-solid fsolve exitflag=4, iterations=16, scaledRes=6.802e-04, RE=5.303e-11, RL=4.829e-11, RF=6.802e-12, gap=5.912e-08
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In softlube_run_case_global_coupled (line 287)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid upstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 74)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+[Warning: Hybrid downstream exterior 2D block failed: hybrid exterior block gap
+fell below minGap. Keeping the 1D lubrication field in that exterior block.] 
+[> In solve_fluid_hybrid_gap1d_exterior2d_withnodes>handle_hybrid_block_failure (line 353)
+In solve_fluid_hybrid_gap1d_exterior2d_withnodes (line 96)
+In solve_selected_poststep_fluid (line 11)
+In apply_bodyfitted_MAC_traction_correction (line 93)
+In softlube_run_case_global_coupled (line 338)
+In run_input_full2D_pressure2_SHORT8_TEMP (line 280)] 
+Time step 8 (t=2.4000e-03, dt=3.000e-04): min(deltaE)=3.315632e-06, max|p|=1.365097e+02, max|du|=4.016e-09, max|dp|=5.336e+00, retries=0
+   min gap after accepted step = 5.912150e-08 m
+   diagnostics: fluidRes=9.331e-21, globalMass=1.782e-27, dV/V=2.244e-03, fluxJump=4.283e-16, sourceInt=4.283e-16
+   geometry: JEmin=9.346e-01, rEmin=3.296e-06 m, JLmin=7.182e-01, rLmin=3.157e-08 m
+
+Hybrid gap-1D / exterior-2D pressure run finished
+   stopStep = 8
+   final t  = 2.400000e-03 s
+   native P range = [0.000000e+00, 1.365097e+02] Pa
+   final max |P2D| = 1.365097e+02 Pa
