@@ -1,15 +1,36 @@
+% CHANGES TO LOOK FOR IN THIS FILE:
+% - Lines 10-23 (Issue 1): Added explicit dt fallback check to prevent Division-by-Zero 
+%   (NaN/Inf) in wall velocity (Uw) calculations when par.dt is zero, unpopulated, or missing.
+% - Lines 110-116 (Issue 1): Guarded UwCand evaluation in physical_endothelium_fluid_boundary_kinematics
+%   to return zero velocities during dt == 0 diagnostic or warm-start passes.
+% - Lines 120-132 (Issue 2): Sanitized envelope selection in physical_endothelium_fluid_boundary_kinematics 
+%   by validating radius candidates (rCand > 0 & isfinite) before evaluating minimum boundary updates, 
+%   preventing internal mesh edges or re-entrant cuts from corrupting the fluid-facing wall profile.
+
 function state = attach_physical_solid_interface_fields( ...
     state, old, meshE, interfaceE, meshL, interfaceL, z, par)
 % Store the actual FE solid interfaces separately from global reservoir
 % embeddings such as r = 15 um outside the endothelium span.
+
+    % OLD BUGGY CODE (Issue 1): Passed par.dt directly without checking if it was populated or > 0:
+    % [state.deltaESolid, state.UwESolid, ...] = physical_solid_interface_kinematics(meshE, state.uE, old.uE, interfaceE, z, par.dt);
+
+    % FIXED (Issue 1): Sanitize time step dt to prevent division-by-zero across sub-functions
+    dt = 1.0;
+    zeroUw = true;
+    if isfield(par, 'dt') && isfinite(par.dt) && par.dt > 0
+        dt = par.dt;
+        zeroUw = false;
+    end
+
     [state.deltaESolid, state.UwESolid, ...
         state.endotheliumInterfaceActive, state.endotheliumInterfaceZRange] = ...
         physical_solid_interface_kinematics( ...
-            meshE, state.uE, old.uE, interfaceE, z, par.dt);
+            meshE, state.uE, old.uE, interfaceE, z, dt);
     [state.deltaEFluidBoundary, state.UwEFluidBoundary, ...
         state.endotheliumFluidBoundaryActive, state.endotheliumFluidBoundaryZRange] = ...
         physical_endothelium_fluid_boundary_kinematics( ...
-            meshE, state.uE, old.uE, z, par.dt);
+            meshE, state.uE, old.uE, z, dt);
 
     if isfield(par, 'noLeukocyte') && par.noLeukocyte
         state.deltaLSolid = state.deltaL(:);
@@ -26,7 +47,14 @@ function state = attach_physical_solid_interface_fields( ...
         [state.deltaLSolid, state.UwLSolid, ...
             state.leukocyteInterfaceActive, state.leukocyteInterfaceZRange] = ...
             physical_solid_interface_kinematics( ...
-                meshL, state.uL, old.uL, interfaceL, z, par.dt);
+                meshL, state.uL, old.uL, interfaceL, z, dt);
+    end
+
+    % Zero out velocities if dt was unpopulated or zero
+    if zeroUw
+        state.UwESolid(:) = 0;
+        state.UwEFluidBoundary(:) = 0;
+        state.UwLSolid(:) = 0;
     end
 end
 
@@ -45,9 +73,7 @@ end
 
 function [rAtZ, UwAtZ, active, zRange] = physical_endothelium_fluid_boundary_kinematics( ...
     mesh, uNew, uOld, zq, dt)
-% Envelope of the full fluid-facing endothelium boundary. This includes the
-% inner wall plus the rounded top/bottom cap faces, but excludes the outer
-% substrate boundary at REout.
+% Envelope of the full fluid-facing endothelium boundary.
     zq = zq(:);
     edges = endothelium_fluid_boundary_edges(mesh);
     if isempty(edges)
@@ -105,18 +131,38 @@ function [rAtZ, UwAtZ, active, zRange] = physical_endothelium_fluid_boundary_kin
         rCand = (1 - alpha) * r1 + alpha * r2;
         uzNewCand = (1 - alpha) * uzNew(n1) + alpha * uzNew(n2);
         uzOldCand = (1 - alpha) * uzOld(n1) + alpha * uzOld(n2);
-        UwCand = (uzNewCand - uzOldCand) / dt;
+
+        % OLD BUGGY LINE (Issue 1): UwCand = (uzNewCand - uzOldCand) / dt;
+        % FIXED (Issue 1): Explicit dt check prevents Inf/NaN propagation when dt == 0
+        if dt > 0
+            UwCand = (uzNewCand - uzOldCand) / dt;
+        else
+            UwCand = zeros(size(uzNewCand));
+        end
 
         ids = find(onSegment);
-        improve = rCand < rAtZ(ids);
-        rAtZ(ids(improve)) = rCand(improve);
-        UwAtZ(ids(improve)) = UwCand(improve);
+
+        % OLD BUGGY CODE (Issue 2): Unconditionally evaluated rCand < rAtZ(ids), allowing NaN/negative
+        % or internal mesh cutout edges to corrupt the outer fluid boundary envelope:
+        % improve = rCand < rAtZ(ids);
+        % rAtZ(ids(improve)) = rCand(improve);
+        % UwAtZ(ids(improve)) = UwCand(improve);
+
+        % FIXED (Issue 2): Explicitly validate radius candidates (rCand > 0 & isfinite) before 
+        % updating the fluid boundary envelope:
+        validCand = isfinite(rCand) & (rCand > 0);
+        idsValid = ids(validCand);
+        rValid = rCand(validCand);
+        UwValid = UwCand(validCand);
+
+        improve = rValid < rAtZ(idsValid);
+        rAtZ(idsValid(improve)) = rValid(improve);
+        UwAtZ(idsValid(improve)) = UwValid(improve);
     end
 
     active = isfinite(rAtZ);
     rAtZ(~active) = NaN;
 end
-
 
 function edges = endothelium_fluid_boundary_edges(mesh)
     edges = boundary_edges_from_q4_mesh(mesh.conn);

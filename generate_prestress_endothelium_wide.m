@@ -138,6 +138,7 @@ function mesh = build_rounded_endothelium_mesh(par)
     mesh.ngp   = numel(g1);
     mesh.gp    = [g1(:), g2(:)];
     mesh.gw    = w1(:).*w2(:);
+    mesh.domain = 'endothelium';
 end
 
 function h = rounded_gap_profile(z, H0, L, Rc)

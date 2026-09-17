@@ -166,9 +166,9 @@ catch ME
     % own step-size control treats it as a bad point and backs off, the
     % same way the custom loop's line search already does.
     n = numel(free);
-    R = 1e6 * ones(n,1);
+    R = 1e4 * ones(n,1);
     if nargout > 1
-        J = speye(n) * 1e6;
+        J = sparse(1:n, 1:n, 1e4, n, n); % Scaled sparse diagonal matching physical residual order
     end
     return;
 end

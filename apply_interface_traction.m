@@ -66,7 +66,9 @@ function [F, Kext] = apply_interface_traction(mesh, u, F, interfaceNodes, tracti
         dx = x2 - x1;
         L  = norm(dx);
 
-        if L <= 0
+        % Guard against floating-point division-by-zero (dx / L below) for
+        % collapsed or heavily compressed element edges, not just exact zero.
+        if L <= 1e-12
             continue;
         end
 

@@ -85,7 +85,8 @@ function sigma = cauchy_stress_at_qp(Xe, ue, N, dNdX, par)
     B = F * F.';
     I = eye(3);
 
-    sigma = par.Ge * J^(-5/3) * ( B - (trace(B)/3)*I ) ...
+    % Standard hyperelastic J^(-2/3) scaling (was incorrectly J^(-5/3))
+    sigma = par.Ge * J^(-2/3) * ( B - (trace(B)/3)*I ) ...
           + par.Ke * (J - 1) * I;
 end
 

@@ -1938,6 +1938,7 @@ mesh.nelem = size(conn,1);
 mesh.ngp = numel(g1);
 mesh.gp = [g1(:), g2(:)];
 mesh.gw = w1(:) .* w2(:);
+mesh.domain = 'leukocyte';
 end
 
 function fe = kelvin_voigt_element_residual_only(Xe, ue, ueOld, mesh, par)

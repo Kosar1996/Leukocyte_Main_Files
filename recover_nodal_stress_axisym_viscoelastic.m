@@ -66,7 +66,8 @@ for e = 1:mesh.nelem
     end
     B = F * F.';
     I3 = eye(3);
-    sigmaElastic = par.Ge * J^(-5/3) * ( B - (trace(B)/3)*I3 ) + par.Ke * (J - 1) * I3;
+    % Standard hyperelastic J^(-2/3) scaling (was incorrectly J^(-5/3))
+    sigmaElastic = par.Ge * J^(-2/3) * ( B - (trace(B)/3)*I3 ) + par.Ke * (J - 1) * I3;
 
     if useVisc
         Fold = local_F(Xe, ueOld, N, dNdX);
