@@ -186,7 +186,12 @@ if nargin==1
     t0State = state;
     t0Fluid = [];
     try
-        [fluid0, ok0, ~] = solve_selected_poststep_fluid(z, state, state, par);
+        % FIX (Issue 2): Guard dt to prevent division-by-zero during static t=0 evaluation
+        parT0 = par;
+        if ~isfield(parT0, 'dt') || ~isfinite(parT0.dt) || parT0.dt <= 0
+            parT0.dt = 1.0;
+        end
+        [fluid0, ok0, ~] = solve_selected_poststep_fluid(z, state, state, parT0);
         if ok0
             fluid0.meshF = add_fluid_nodes(fluid0.meshF);
             [pCell0, sigmaCell0, center0] = recover_fluid_nodes_pressure_stress_Q4( ...
@@ -571,6 +576,7 @@ while tNow < par.tEnd - timeTol
         break;
     end
 
+    % FIX (Issue 3): Increment step index and handle capacity growth strictly post-acceptance
     tn = tn + 1;
     if tn > historyCapacity
         growBy = max(historyCapacity, max(nSteps, 1));
