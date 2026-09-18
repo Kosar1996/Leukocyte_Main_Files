@@ -32,7 +32,13 @@ clear all;
 
 %% 1. Paths
 softlubeDir = '';
-addpath(softlubeDir);
+% FIX 1: Resolve softlubeDir dynamically relative to mfilename if empty
+if isempty(softlubeDir)
+    softlubeDir = fileparts(mfilename('fullpath'));
+end
+if ~isempty(softlubeDir)
+    addpath(softlubeDir);
+end
 
 %% 2. Time Controls
 dt = 3e-4;           % time step size [s]
@@ -235,28 +241,25 @@ if numel(fieldnames(struct()))==0
     cfg.fluid.resolveFluidAfterTractionCorrection = true;
     cfg.fluid.useBodyFittedMACTractionInSolid = true;
 
-    cfg.parOverrides.useFull2DFluid = true;
-    %added_temp
-    cfg.parOverrides.useHybridGap1DExterior2DFluid = true;
-    %cfg.parOverrides.useHybridGap1DExterior2DFluid = false;
-    cfg.parOverrides.hybridGapZ = gap1DWindow;
+    % FIX 2: Synchronize cfg.parOverrides directly with cfg.fluid
+    cfg.parOverrides.useFull2DFluid = cfg.fluid.useFull2DFluid;
+    cfg.parOverrides.useHybridGap1DExterior2DFluid = cfg.fluid.useHybridGap1DExterior2DFluid;
+    cfg.parOverrides.hybridGapZ = cfg.fluid.hybridGapZ;
     cfg.parOverrides.NrExterior2D = NrExterior2D;
     cfg.parOverrides.bodyFittedRadialFineWindow = radialFineWindow;
     cfg.parOverrides.bodyFittedRadialFineWeight = radialFineWeight;
-    cfg.parOverrides.hybridExteriorMinCells = 4;
-    cfg.parOverrides.hybridExteriorFailMode = 'warn';
-    cfg.parOverrides.hybridUseExterior2DPressureVector = true;
-    cfg.parOverrides.useBodyFittedMACFluid = true;
-    cfg.parOverrides.useBodyFittedMACTractionCorrection = true;
-    % parOverrides wins over cfg.fluid, so this copy must match the one
-    % above -- see the comment there for why these are off.
-    cfg.parOverrides.useFeedbackTractionCorrection = false;
-    cfg.parOverrides.useAitkenTractionCorrectionRelax = false;
-    cfg.parOverrides.maxBodyFittedTractionCorrections = 100;
-    cfg.parOverrides.bodyFittedTractionCorrectionRelax = 0.5;
-    cfg.parOverrides.bodyFittedTractionCorrectionFailMode = 'warn';
-    cfg.parOverrides.resolveFluidAfterTractionCorrection = true;
-    cfg.parOverrides.useBodyFittedMACTractionInSolid = true;
+    cfg.parOverrides.hybridExteriorMinCells = cfg.fluid.hybridExteriorMinCells;
+    cfg.parOverrides.hybridExteriorFailMode = cfg.fluid.hybridExteriorFailMode;
+    cfg.parOverrides.hybridUseExterior2DPressureVector = cfg.fluid.hybridUseExterior2DPressureVector;
+    cfg.parOverrides.useBodyFittedMACFluid = cfg.fluid.useBodyFittedMACFluid;
+    cfg.parOverrides.useBodyFittedMACTractionCorrection = cfg.fluid.useBodyFittedMACTractionCorrection;
+    cfg.parOverrides.useFeedbackTractionCorrection = cfg.fluid.useFeedbackTractionCorrection;
+    cfg.parOverrides.useAitkenTractionCorrectionRelax = cfg.fluid.useAitkenTractionCorrectionRelax;
+    cfg.parOverrides.maxBodyFittedTractionCorrections = cfg.fluid.maxBodyFittedTractionCorrections;
+    cfg.parOverrides.bodyFittedTractionCorrectionRelax = cfg.fluid.bodyFittedTractionCorrectionRelax;
+    cfg.parOverrides.bodyFittedTractionCorrectionFailMode = cfg.fluid.bodyFittedTractionCorrectionFailMode;
+    cfg.parOverrides.resolveFluidAfterTractionCorrection = cfg.fluid.resolveFluidAfterTractionCorrection;
+    cfg.parOverrides.useBodyFittedMACTractionInSolid = cfg.fluid.useBodyFittedMACTractionInSolid;
     cfg.parOverrides.NrFluid2D = NrFluid2D;
     cfg.parOverrides.Nr = NrFluid2D;
 
@@ -287,7 +290,8 @@ fprintf('   exterior radius     = %.3f um\n', rOuter*1e6);
 fprintf('   1D gap window       = [%.3f, %.3f] um\n', gap1DWindow(1)*1e6, gap1DWindow(2)*1e6);
 fprintf('   exterior 2D radial Nr = %d\n\n', NrExterior2D);
 
-if exist('out')
+% FIX 3: Check if out already exists in workspace before launching
+if exist('out', 'var')
 out = softlube_run_case_global_coupled(cfg, out);
 else
     out = softlube_run_case_global_coupled(cfg);
