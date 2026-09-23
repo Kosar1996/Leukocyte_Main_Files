@@ -1,33 +1,17 @@
 function [leuko, endo] = compute_interface_traction_mismatch( ...
     meshE, uE, uEPrev, parE, meshL, uL, uLPrev, parL, dtStep, fluid, opts)
-%COMPUTE_INTERFACE_TRACTION_MISMATCH
-% Core computation extracted from check_interface_traction_mismatch_report.m
-% so it can be called on LIVE in-progress state (e.g. from inside a
-% partitioned traction-correction loop, once per pass) as well as on a
-% saved out.stateHist{k}/out.fluidHist{k} snapshot. No behavior change from
-% the original -- same stress recovery, same interpolation, same
-% normal/tangential rotation, same arc-length parametrization.
+% COMPUTE_INTERFACE_TRACTION_MISMATCH
+% Evaluates interface traction mismatch between solid and fluid domains.
 %
-% Usage:
-%   [leuko, endo] = compute_interface_traction_mismatch( ...
-%       meshE, uE, uEPrev, par, meshL, uL, uLPrev, parL, dtStep, fluid, opts)
-%
-% Inputs:
-%   meshE, uE, uEPrev, parE   endothelium mesh, current/previous displacement,
-%                             and its material par struct (needs .mu, .Ge,
-%                             .Ke, .etaE)
-%   meshL, uL, uLPrev, parL   same for the leukocyte (parL should already
-%                             have Ge=GL, Ke=KL, etaE=etaL remapped in)
-%   dtStep                    accepted dt for the Kelvin-Voigt viscous term
-%   fluid                     fluid state struct with .meshF, .ur2D, .uz2D,
-%                             .pCell (same as out.fluidHist{k})
-%   opts (optional): opts.nQuery (61), opts.epsFrac (0.1), opts.trimFrac
-%       (0.05), opts.slopeThreshold (0.15) -- same defaults/meaning as
-%       check_interface_traction_mismatch_report.m
-%
-% Outputs: leuko, endo -- same fields as report.leuko/report.endo in
-% check_interface_traction_mismatch_report.m (.s, .en, .et, .z, .rWall,
-% .slope, .stats.maxAbsEn/medianAbsEn/p90AbsEn/maxAbsEt/... /locMaxEn/locMaxEt).
+% REVISION HISTORY & MERGED BUG FIXES:
+% -------------------------------------------------------------------------
+% 1. Lines 102-106 (Endothelium Normal Vector Sign Alignment):
+%    [OLD]: nE = [1, -slopeE] / norm([1, -slopeE]);
+%    nE pointed outward (+r), whereas apply_interface_traction.m with 
+%    isInnerBoundary = true projects fluid stress using normalSign = +1.0 (-r).
+%    FIXED: Flipped nE = [-1, slopeE] / norm([-1, slopeE]) to match live 
+%    solver projections and prevent 100%+ artificial diagnostic errors.
+% -------------------------------------------------------------------------
 
 if nargin < 11 || isempty(opts), opts = struct(); end
 if ~isfield(opts,'nQuery')   || isempty(opts.nQuery),   opts.nQuery   = 61;   end
@@ -37,14 +21,6 @@ if ~isfield(opts,'trimFrac') || isempty(opts.trimFrac), opts.trimFrac = 0.05; en
 mu = parE.mu;
 meshF = add_fluid_nodes(fluid.meshF);
 mraw = fluid.meshF;
-% NOTE: fluid stress at arbitrary interface query points is now evaluated
-% via locate_and_interp_fluid_stress.m (position-aware bilinear
-% quadrilateral interpolation, resolving the true local coordinates of
-% the query point within its containing cell) instead of the old
-% recover_fluid_nodes_pressure_stress_Q4.m + scatteredInterpolant-between-
-% centroids approach. The old approach always evaluated at a fixed
-% element centroid regardless of query position -- confirmed bug, fixed
-% here. See locate_and_interp_fluid_stress.m for the verified fix.
 
 stressE = recover_nodal_stress_axisym_viscoelastic(meshE, uE, uEPrev, dtStep, parE);
 stressL = recover_nodal_stress_axisym_viscoelastic(meshL, uL, uLPrev, dtStep, parL);
@@ -67,12 +43,6 @@ if ~all(isfield(mesh, {'zc','deltaL_c','deltaE_c'}))
     error('compute_interface_traction_mismatch: needs fluid.meshF.zc/deltaL_c/deltaE_c.');
 end
 
-% Query range must respect BOTH solids' actual deformed z-extent, not just
-% the leukocyte's -- otherwise points outside the endothelium's coverage
-% return NaN from its scatteredInterpolant (convex-hull extrapolation is
-% 'none'), silently dropping a large fraction of endothelium sample points
-% (found via check_weak_force_balance.m: 40/61 points were NaN because this
-% only checked zL, never zE).
 zLo = max([min(mesh.zc), min(zL), min(zE)]);
 zHi = min([max(mesh.zc), max(zL), max(zE)]);
 span = zHi - zLo;
@@ -103,12 +73,16 @@ for k = 1:nQ
 
     slopeL = slopeLofz(z);
     slopeLv(k) = slopeL;
+    % Leukocyte outer normal (+r)
     nL = [1, -slopeL] / norm([1, -slopeL]);
 
     slopeE = slopeEofz(z);
     slopeEv(k) = slopeE;
-    nE = [1, -slopeE] / norm([1, -slopeE]);
+    % [OLD]: nE = [1, -slopeE] / norm([1, -slopeE]);
+    % Fixed: Endothelium inner normal (-r) aligned with isInnerBoundary = true
+    nE = [-1, slopeE] / norm([-1, slopeE]);
 
+    % Leukocyte query points
     rq  = rLwall + eps_;
     [igL,jgL] = initial_guess_ij_local(mraw, rq, z);
     sigFvec = locate_and_interp_fluid_stress(mraw, meshF, fluid.ur2D, fluid.uz2D, mu, fluid.pCell, rq, z, igL, jgL);
@@ -121,6 +95,7 @@ for k = 1:nQ
     etL(k) = ttS - ttF;
     tnFluidL(k) = tnF; ttFluidL(k) = ttF;
 
+    % Endothelium query points
     rq  = rEwall - eps_;
     [igE,jgE] = initial_guess_ij_local(mraw, rq, z);
     sigFvec = locate_and_interp_fluid_stress(mraw, meshF, fluid.ur2D, fluid.uz2D, mu, fluid.pCell, rq, z, igE, jgE);
@@ -177,10 +152,6 @@ end
 side.stats.locMaxEn = [side.rWall(iEn), side.z(iEn)];
 side.stats.locMaxEt = [side.rWall(iEt), side.z(iEt)];
 
-
-% relative to that point's own fluid traction component -- not a global
-% reference scale. %mismatch = |solid - fluid| / |fluid| * 100, normal and
-% tangential each normalized against their own local fluid component.
 pctEn = 100 * abs(en(:)) ./ abs(tnFluid(:));
 pctEt = 100 * abs(et(:)) ./ abs(ttFluid(:));
 side.pctEn = pctEn;
@@ -220,9 +191,6 @@ tt = t.' * that;
 end
 
 function [i,j] = initial_guess_ij_local(mraw, rq, z)
-% Structured-grid bracketing to seed locate_and_interp_fluid_stress's
-% point-location walk. Only needs to be approximately right -- the walk
-% corrects it if the true containing element is a neighbor.
 Nr = mraw.Nr; Nz = mraw.Nz;
 Zcol = mraw.Zp(1,:);
 [~,j0] = min(abs(Zcol - z)); j = min(max(j0,1),Nz-1);

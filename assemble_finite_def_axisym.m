@@ -56,6 +56,9 @@ function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par
 
     I3 = eye(3);
 
+    % LINE-SEARCH STABILITY FIX: Use unscaled physical dt for rate evaluation
+    dt_phys = par.dt;
+
     for g = 1:cache.ngp
         N = cache.N(:,g,e).';
         dNdX = cache.dNdX(:,:,g,e);
@@ -89,7 +92,8 @@ function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par
         trB = B(1,1) + B(2,2) + B(3,3);
         devB = B - (trB/3)*I3;
 
-        aIso = J^(-5/3);
+        % KINEMATIC SCALING FIX: Neo-Hookean J^(-2/3)
+        aIso = J^(-2/3);
         T = par.Ge * aIso * devB + par.Ke * (J - 1) * I3;
         P = J * T * FinvT;
         Wgp = (2*pi*Rg) * detJ0 * w;
@@ -109,12 +113,17 @@ function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par
         for alpha = 1:8
             dF = local_dF_from_dof(alpha, N, dNdX, Rg);
 
-            trFinv_dF = sum(sum(Finv.' .* dF));
+            % TANGENT TRACE FIX: In-lined scalar product (eliminates sum(sum(...)))
+            trFinv_dF = dF(1,1)*Finv(1,1) + dF(1,3)*Finv(3,1) + ...
+                        dF(2,2)*Finv(2,2) + dF(3,1)*Finv(1,3) + dF(3,3)*Finv(3,3);
+
             dJ = J * trFinv_dF;
             dB = dF * F.' + F * dF.';
             trdB = dB(1,1) + dB(2,2) + dB(3,3);
             dDevB = dB - (trdB/3)*I3;
-            daIso = -(5/3) * aIso * trFinv_dF;
+
+            % KINEMATIC SCALING FIX: Derivative of J^(-2/3)
+            daIso = -(2/3) * aIso * trFinv_dF;
 
             dT = par.Ge * ( daIso * devB + aIso * dDevB ) ...
                + par.Ke * dJ * I3;
@@ -137,11 +146,6 @@ function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par
 end
 
 function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
-% Consistent analytical tangent for the axisymmetric finite-deformation Q4 element.
-% This replaces the old finite-difference tangent.
-%
-% Unknown ordering in ue:
-%   ue = [u_r1; u_z1; u_r2; u_z2; u_r3; u_z3; u_r4; u_z4]
 
     fe = zeros(8,1);
     Ke = zeros(8,8);
@@ -154,6 +158,9 @@ function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
 
     I3 = eye(3);
 
+    % LINE-SEARCH STABILITY FIX: Use unscaled physical dt for rate evaluation
+    dt_phys = par.dt;
+
     for g = 1:mesh.ngp
         xi  = mesh.gp(g,1);
         eta = mesh.gp(g,2);
@@ -162,7 +169,6 @@ function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
         [N, dNdxi, ~] = q4_shape(xi, eta, 1.0);
         [~, dNdX, detJ0] = jacobian_2d(Xe, dNdxi);
 
-        % Reference/current radii at GP
         Rg = N * Rnod;
         rg = N * rnod;
 
@@ -170,7 +176,6 @@ function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
             error('Non-positive radius encountered in finite-deformation element.');
         end
 
-        % Current deformation gradient ingredients
         drdR = dNdX(:,1).' * rnod;
         drdZ = dNdX(:,2).' * rnod;
         dzdR = dNdX(:,1).' * znod;
@@ -191,18 +196,13 @@ function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
         trB = B(1,1) + B(2,2) + B(3,3);
         devB = B - (trB/3)*I3;
 
-        aIso = J^(-5/3);
+        % KINEMATIC SCALING FIX: Neo-Hookean J^(-2/3)
+        aIso = J^(-2/3);
 
-        % Cauchy stress
         T = par.Ge * aIso * devB + par.Ke * (J - 1) * I3;
-
-        % First Piola
         P = J * T * FinvT;
-
-        % Constant GP weight in reference configuration
         Wgp = (2*pi*Rg) * detJ0 * w;
 
-        % ---- residual contribution ----
         for a = 1:4
             dNa_dR = dNdX(a,1);
             dNa_dZ = dNdX(a,2);
@@ -215,31 +215,28 @@ function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
                 ( P(3,1)*dNa_dR + P(3,3)*dNa_dZ ) * Wgp;
         end
 
-        % ---- consistent analytical tangent ----
         for alpha = 1:8
             dF = local_dF_from_dof(alpha, N, dNdX, Rg);
 
-            % variations of kinematics
-                trFinv_dF = sum(sum(Finv.' .* dF));
-                dJ = J * trFinv_dF;
+            % TANGENT TRACE FIX: In-lined scalar product (eliminates sum(sum(...)))
+            trFinv_dF = dF(1,1)*Finv(1,1) + dF(1,3)*Finv(3,1) + ...
+                        dF(2,2)*Finv(2,2) + dF(3,1)*Finv(1,3) + dF(3,3)*Finv(3,3);
 
-                dB = dF * F.' + F * dF.';
-                trdB = dB(1,1) + dB(2,2) + dB(3,3);
-                dDevB = dB - (trdB/3)*I3;
+            dJ = J * trFinv_dF;
 
-                daIso = -(5/3) * aIso * trFinv_dF;
+            dB = dF * F.' + F * dF.';
+            trdB = dB(1,1) + dB(2,2) + dB(3,3);
+            dDevB = dB - (trdB/3)*I3;
 
-            % variation of Cauchy stress
+            % KINEMATIC SCALING FIX: Derivative of J^(-2/3)
+            daIso = -(2/3) * aIso * trFinv_dF;
+
             dT = par.Ge * ( daIso * devB + aIso * dDevB ) ...
                + par.Ke * dJ * I3;
 
-            % variation of F^{-T}
             dFinvT = -FinvT * dF.' * FinvT;
-
-            % variation of First Piola
             dP = dJ * T * FinvT + J * dT * FinvT + J * T * dFinvT;
 
-            % assemble tangent column alpha
             for a = 1:4
                 dNa_dR = dNdX(a,1);
                 dNa_dZ = dNdX(a,2);

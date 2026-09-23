@@ -1,48 +1,42 @@
 function [F, Kext] = apply_interface_traction(mesh, u, F, interfaceNodes, traction)
 % APPLY_INTERFACE_TRACTION
-% Adds distributed follower traction on the deformed interface to the
-% global external force vector F, and returns the consistent tangent Kext.
-%
-% traction.normal  : positive in local outward normal direction
-% traction.tangent : positive in local tangent direction (+increasing z
-%                    when interface is undeformed and ordered by z)
-%
-% Inputs:
-%   mesh, u, F, interfaceNodes, traction
-%
-% Outputs:
-%   F    : updated global external force vector
-%   Kext : global consistent tangent of the follower traction load
-%
-% Notes:
-% - This is a deformed-configuration line load:
-%       f_e = \int N^T t ds * 2*pi*r
-% - Both the line Jacobian ds and the local basis (n_hat,t_hat) depend on u.
-% - The traction magnitudes tn, tt are assumed prescribed functions of z only;
-%   their geometric directions follow the deformed interface.
+% Adds distributed follower traction on the deformed interface to the global 
+% external force vector F, and returns the consistent follower tangent Kext.
 
     ndof = size(mesh.nodes,1) * 2;
     Kext = sparse(ndof, ndof);
 
-    if isfield(traction, 'z')
-        zn = mesh.nodes(interfaceNodes,2) + u(2*interfaceNodes(:));
-    else
-        zn = mesh.nodes(interfaceNodes,2);
-    end
-    [zs, idx] = sort(zn);
-    interface = interfaceNodes(idx);
+    % Preserve topological node ordering directly from mesh definition
+    interface = interfaceNodes(:);
+    
+    % Evaluate reference and deformed axial coordinates along ordered nodes
+    zn_ref = mesh.nodes(interface, 2);
+    zn_def = zn_ref + u(2*interface);
 
+    % Interpolate traction magnitudes along appropriate spatial configuration
     if isfield(traction, 'z')
-        tr_n = interp_curve_values(traction.z, traction.normal, zs);
-        tr_t = interp_curve_values(traction.z, traction.tangent, zs);
+        tr_n = interp_curve_values(traction.z, traction.normal, zn_def);
+        tr_t = interp_curve_values(traction.z, traction.tangent, zn_def);
+        [tr_n, tr_t] = apply_traction_support_window(traction, zn_def, tr_n, tr_t);
     else
-        zq = traction_to_z(traction, zs);
+        zq = traction_to_z(traction, zn_ref);
         tr_n = zq.normal;
         tr_t = zq.tangent;
+        [tr_n, tr_t] = apply_traction_support_window(traction, zn_ref, tr_n, tr_t);
     end
-    [tr_n, tr_t] = apply_traction_support_window(traction, zs, tr_n, tr_t);
 
-    % 2-point Gauss rule on each line segment
+    % -------------------------------------------------------------------------
+    % CORRECTED ORIENTATION SIGN LOGIC:
+    % Outer boundary (Endothelium): normalSign = +1.0 -> pushes +r into tissue
+    % Inner boundary (Leukocyte)  : normalSign = -1.0 -> pushes -r into cell core
+    % -------------------------------------------------------------------------
+    isInnerBoundary = isfield(traction, 'isInnerBoundary') && traction.isInnerBoundary;
+    normalSign = 1.0; 
+    if isInnerBoundary
+        normalSign = -1.0;
+    end
+
+    % 2-point Gauss quadrature rule
     xi_gp = [-1, 1] / sqrt(3);
     w_gp  = [1, 1];
 
@@ -52,11 +46,11 @@ function [F, Kext] = apply_interface_traction(mesh, u, F, interfaceNodes, tracti
 
         dofs = [2*n1-1, 2*n1, 2*n2-1, 2*n2];
 
-        % reference coordinates
+        % Reference coordinates
         r1 = mesh.nodes(n1,1);  z1 = mesh.nodes(n1,2);
         r2 = mesh.nodes(n2,1);  z2 = mesh.nodes(n2,2);
 
-        % current coordinates
+        % Current deformed coordinates
         ur1 = u(2*n1-1); uz1 = u(2*n1);
         ur2 = u(2*n2-1); uz2 = u(2*n2);
 
@@ -66,16 +60,16 @@ function [F, Kext] = apply_interface_traction(mesh, u, F, interfaceNodes, tracti
         dx = x2 - x1;
         L  = norm(dx);
 
-        % Guard against floating-point division-by-zero (dx / L below) for
-        % collapsed or heavily compressed element edges, not just exact zero.
-        if L <= 1e-12
+        if L <= 1e-14
             continue;
         end
 
         t_hat = dx / L;
-        n_hat = [ t_hat(2); -t_hat(1) ];
 
-        % nodal traction magnitudes on this segment
+        % Unit normal vector with corrected boundary orientation
+        n_hat = normalSign * [ t_hat(2); -t_hat(1) ];
+
+        % Nodal traction magnitudes
         tn_nodes = [tr_n(k);   tr_n(k+1)];
         tt_nodes = [tr_t(k);   tr_t(k+1)];
 
@@ -91,80 +85,44 @@ function [F, Kext] = apply_interface_traction(mesh, u, F, interfaceNodes, tracti
 
             Nline = [N1, N2];
 
-            % scalar radius at GP in current configuration
+            % Scalar radius at Gauss point in current configuration
             r_gp = N1 * x1(1) + N2 * x2(1);
 
-            % traction magnitudes interpolated from nodal values
             tn_gp = Nline * tn_nodes;
             tt_gp = Nline * tt_nodes;
 
-            % local traction vector in current basis
-            tvec = tn_gp * n_hat + tt_gp * t_hat;   % 2x1
+            % Current traction vector in spatial basis
+            tvec = tn_gp * n_hat + tt_gp * t_hat;
 
-            % shape matrix for line element
             Nmat = [N1 0  N2 0;
-                    0  N1 0  N2];                  % 2x4
+                    0  N1 0  N2];
 
             Jline = L / 2;
             fac   = (2*pi*r_gp) * Jline * wg;
 
-            % force contribution
+            % External force vector contribution
             fe = fe + (Nmat.' * tvec) * fac;
 
-            % ---------------------------------------------------------
-            % consistent tangent of follower load
-            % ---------------------------------------------------------
-            %
-            % x_xi = d x / d xi = 0.5*(x2-x1) = 0.5*dx
-            % L = |dx|
-            % t_hat = dx/L
-            % n_hat = R * t_hat, with R = [0 1; -1 0]
-            %
-            % Variation wrt nodal displacement vector q=[ur1 uz1 ur2 uz2]^T:
-            %   delta dx = Bdx * delta q
-            %   Bdx = [ -1  0  1  0
-            %            0 -1  0  1 ]
-            %
-            %   delta L = t_hat^T delta dx
-            %   delta t_hat = (I - t_hat t_hat^T) delta dx / L
-            %   delta n_hat = R delta t_hat
-            %   delta r_gp = Br delta q, Br = [N1 0 N2 0]
-            %
-            % Then:
-            %   delta tvec = tn_gp delta n_hat + tt_gp delta t_hat
-            %   delta fac  = 2*pi*( Jline delta r_gp + r_gp delta Jline )*wg
-            %   delta Jline = 0.5 delta L
-            %
-            %   delta f = N^T (delta tvec) fac + N^T tvec delta fac
-            %
-
+            % Consistent follower load derivatives
             Bdx = [-1  0  1  0;
-                    0 -1  0  1];                  % 2x4
+                    0 -1  0  1];
 
-            Br  = [N1 0 N2 0];                    % 1x4
+            Br  = [N1 0 N2 0];
 
             I2 = eye(2);
-            Ptan = I2 - (t_hat * t_hat.');        % projector normal to tangent
-            R90 = [0 1; -1 0];
+            Ptan = I2 - (t_hat * t_hat.');
 
-            % delta t_hat = At * delta q
-            At = (Ptan / L) * Bdx;                % 2x4
+            % Rotation operator matching boundary normal orientation
+            R90 = normalSign * [0 1; -1 0];
 
-            % delta n_hat = An * delta q
-            An = R90 * At;                        % 2x4
+            At = (Ptan / L) * Bdx;
+            An = R90 * At;
 
-            % delta Jline = AJ * delta q
-            % Jline = L/2, delta L = t_hat^T delta dx
-            AJ = 0.5 * (t_hat.' * Bdx);           % 1x4
+            AJ = 0.5 * (t_hat.' * Bdx);
+            Afac = 2*pi * wg * ( Jline * Br + r_gp * AJ );
+            Avec = tn_gp * An + tt_gp * At;
 
-            % delta fac = Afac * delta q
-            Afac = 2*pi * wg * ( Jline * Br + r_gp * AJ );  % 1x4
-
-            % delta tvec = Avec * delta q
-            Avec = tn_gp * An + tt_gp * At;       % 2x4
-
-            % consistent tangent contribution:
-            % ke(:,j) = d(fe)/dq_j
+            % Consistent element tangent matrix
             ke = ke + (Nmat.' * Avec) * fac + (Nmat.' * tvec) * Afac;
         end
 
@@ -186,8 +144,7 @@ function [tr_n, tr_t] = apply_traction_support_window(traction, zs, tr_n, tr_t)
         return;
     end
 
-    if isfield(traction, 'supportInterval') && ...
-            numel(traction.supportInterval) == 2
+    if isfield(traction, 'supportInterval') && numel(traction.supportInterval) == 2
         support = sort(traction.supportInterval(:));
     elseif isfield(traction, 'z') && ~isempty(traction.z)
         support = [min(traction.z(:)); max(traction.z(:))];

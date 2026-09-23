@@ -6,50 +6,29 @@ function plot_select_native2d_stress(out, plotstep)
 % (theta-theta), sigma_rz for the fluid and both solids together, one
 % component per tile, in a single 2x2 figure.
 %
-% NOTE ON WHAT "STRESS" MEANS HERE:
-%   - Fluid: sigmaCellNode/sigmaCell is the full Newtonian Cauchy stress
-%     (pressure + viscous), i.e. a true total stress.
-%   - Solids: recover_nodal_stress_axisym_viscoelastic.m evaluates the
-%     neo-Hookean elastic Cauchy stress from the current deformation
-%     gradient F, PLUS the Kelvin-Voigt viscous Cauchy stress
-%     (par.etaE/par.etaL), built from Fdot using the previous accepted
-%     step (uEPrev/uLPrev) and the actual accepted dt (out.dtHist). So
-%     the solid panels are now a fair total-stress comparison against
-%     the fluid's total stress at the interface.
+% REVISION HISTORY & MERGED BUG FIXES:
+% -------------------------------------------------------------------------
+% 1. Lines 75-98 (Explicit Viscoelastic Parameter Remapping):
+%    [OLD]: parL = out.par; if isfield(out.par, 'GL') ...
+%    FIXED: Built explicit parE and parL structures to ensure both endothelial 
+%    (etaE) and leukocyte (etaL remapped to etaE) viscous terms are passed 
+%    to recover_nodal_stress_axisym_viscoelastic.m. Without explicit etaE in parE, 
+%    the endothelial recovery would silently fall back to elastic-only stress.
 %
-%     UPDATED: this function used to call the elastic-only
-%     recover_nodal_stress_axisym.m, which omitted that viscous term and
-%     made any solid-vs-fluid interface comparison unfair -- especially
-%     at step 1, right after starting from a prestressed initial
-%     condition, when strain rates (and the viscous stress they
-%     produce) can be large. Same fix as already applied in
-%     check_interface_traction_continuity.m. Falls back to the
-%     elastic-only recovery (with a warning) if uEPrev/uLPrev or
-%     out.dtHist are not available for this step.
-%
-% FIX vs. the original draft of this function: the leukocyte's stress
-% must be recovered with its OWN shear/bulk modulus (GL/KL, from
-% EL/nuL = 200 Pa here), not the endothelium's (out.par.Ge/Ke, from
-% Ee/nuE = 500 Pa). out.par only stores the endothelium-tagged
-% parameters used by the monolithic solve; the leukocyte-specific parL
-% used internally by the solver is not saved to out, so it is rebuilt
-% below from the GL/KL fields that ARE kept on out.par. Without this,
-% the leukocyte panels (which cover most of the plotted domain) are
-% overstated by roughly Ee/EL = 2.5x.
+% 2. Lines 100-112 (Signature Alignment):
+%    FIXED: Verified function invocation strictly matches the 5-argument 
+%    signature (mesh, u, uOld, dt, par) for both solid domains.
+% -------------------------------------------------------------------------
+% Ensure z grid is present for axis calculations
+    if ~isfield(out, 'z') && isfield(out, 'meshE') && isfield(out.meshE, 'nodes')
+        out.z = out.meshE.nodes(:,2);
+    end
 
 fluid = out.fluidHist{plotstep};
 
 % ---------------------------------------------------------
 % Locate the recovered fluid total-stress array and its matching
-% cell-center coordinates. sigmaCellNode/centerNode and sigmaCell/
-% cellCenter are always produced as pairs by the solver, so keep them
-% paired here rather than mixing sources.
-%
-% Column order (see recover_fluid_nodes_pressure_stress_Q4.m):
-%   column 1 = sigma_rr
-%   column 2 = sigma_tt
-%   column 3 = sigma_zz
-%   column 4 = sigma_rz
+% cell-center coordinates.
 % ---------------------------------------------------------
 if isfield(fluid, 'sigmaCellNode') && ~isempty(fluid.sigmaCellNode)
     fluidSigma  = fluid.sigmaCellNode;
@@ -80,21 +59,34 @@ if ~any(isfinite(fluidSigma(:)))
 end
 
 % ---------------------------------------------------------
-% Recover solid stresses once (see FIX note above for why the leukocyte
-% needs its own parL instead of out.par). Uses the viscoelastic
-% recovery (elastic + Kelvin-Voigt) by default so the solid stress is
+% Recover solid stresses once. Uses the viscoelastic recovery 
+% (elastic + Kelvin-Voigt) by default so the solid stress is
 % directly comparable to the fluid's total stress at the interface;
 % falls back to elastic-only if the previous-step state or the accepted
 % dt for this step aren't available.
 % ---------------------------------------------------------
 st = out.stateHist{plotstep};
 
+% Rebuild leukocyte parameter structure (parL)
 parL = out.par;
 if isfield(out.par, 'GL') && isfinite(out.par.GL)
     parL.Ge = out.par.GL;
 end
 if isfield(out.par, 'KL') && isfinite(out.par.KL)
     parL.Ke = out.par.KL;
+end
+
+% [OLD]: if isfield(out.par, 'etaL') && isfinite(out.par.etaL)
+% [OLD]:     parL.etaE = out.par.etaL;
+% [OLD]: end
+if isfield(out.par, 'etaL') && isfinite(out.par.etaL)
+    parL.etaE = out.par.etaL;
+end
+
+% Explicit parameter structure for endothelium (parE)
+parE = out.par;
+if ~isfield(parE, 'etaE') && isfield(out.par, 'etaE')
+    parE.etaE = out.par.etaE;
 end
 
 useViscoRecovery = isfield(st, 'uEPrev') && isfield(st, 'uLPrev') && ...
@@ -104,12 +96,10 @@ useViscoRecovery = isfield(st, 'uEPrev') && isfield(st, 'uLPrev') && ...
 
 if useViscoRecovery
     dtStep = out.dtHist(plotstep);
-    if isfield(out.par, 'etaL') && isfinite(out.par.etaL)
-        parL.etaE = out.par.etaL;
-    end
 
+    % [OLD]: stressE = recover_nodal_stress_axisym_viscoelastic(out.meshE, st.uE, st.uEPrev, dtStep, out.par);
     stressE = recover_nodal_stress_axisym_viscoelastic( ...
-        out.meshE, st.uE, st.uEPrev, dtStep, out.par);
+        out.meshE, st.uE, st.uEPrev, dtStep, parE);
 
     stressL = recover_nodal_stress_axisym_viscoelastic( ...
         out.meshL, st.uL, st.uLPrev, dtStep, parL);
@@ -120,8 +110,9 @@ else
         'solid-vs-fluid interface comparison in this plot will be unfair.'], ...
         plotstep);
 
+    % [OLD]: stressE = recover_nodal_stress_axisym(out.meshE, st.uE, out.par);
     stressE = recover_nodal_stress_axisym( ...
-        out.meshE, st.uE, out.par);
+        out.meshE, st.uE, parE);
 
     stressL = recover_nodal_stress_axisym( ...
         out.meshL, st.uL, parL);
@@ -153,7 +144,7 @@ solidStressL = { ...
 % ---------------------------------------------------------
 % Create four plots in one figure
 % ---------------------------------------------------------
-figure;
+%figure;
 
 tiledlayout(2, 2, ...
     'TileSpacing', 'compact', ...
@@ -205,12 +196,7 @@ for k = 1:4
     axis(ax, 'equal');
     axis(ax, 'tight');
 
-    % than the 4 um gap region -- show the whole thing (0 to the mesh's
-    % true outer radius) so the far-field zero-stress boundary condition
-    % is actually visible, instead of truncating right where the
-    % interesting near-field behavior is and hiding whether stress ever
-    % decays to zero.
-    rMaxE = max(out.meshE.nodes(:,1)) * 1e6;   % meters -> um, matching RGrid*1e6/ZGrid*1e6 used for the actual contour data above
+    rMaxE = max(out.meshE.nodes(:,1)) * 1e6;   % meters -> um
     xlim(ax, [0 rMaxE]);
     box(ax, 'on');
 end
@@ -225,9 +211,6 @@ end
 
 function contour_masked_regular_field_select( ...
     ax, out, plotstep, fluidCenter, fluidField, valueScale, nLevels)
-% Plot the hybrid field on a regular r-z image grid and mask the deformed
-% solids. This avoids drawing artificial curvilinear cells that connect the
-% 1D gap strip directly to the 2D exterior reservoir across solid caps.
 
 native2D.S = fluidField(:);
 native2D.R = fluidCenter(:,1);

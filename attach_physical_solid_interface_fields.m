@@ -1,9 +1,9 @@
 % CHANGES TO LOOK FOR IN THIS FILE:
-% - Lines 10-23 (Issue 1): Added explicit dt fallback check to prevent Division-by-Zero 
+% - Lines 12-24 (Issue 1): Added explicit dt fallback check to prevent Division-by-Zero 
 %   (NaN/Inf) in wall velocity (Uw) calculations when par.dt is zero, unpopulated, or missing.
 % - Lines 110-116 (Issue 1): Guarded UwCand evaluation in physical_endothelium_fluid_boundary_kinematics
 %   to return zero velocities during dt == 0 diagnostic or warm-start passes.
-% - Lines 120-132 (Issue 2): Sanitized envelope selection in physical_endothelium_fluid_boundary_kinematics 
+% - Lines 120-134 (Issue 2): Sanitized envelope selection in physical_endothelium_fluid_boundary_kinematics 
 %   by validating radius candidates (rCand > 0 & isfinite) before evaluating minimum boundary updates, 
 %   preventing internal mesh edges or re-entrant cuts from corrupting the fluid-facing wall profile.
 
