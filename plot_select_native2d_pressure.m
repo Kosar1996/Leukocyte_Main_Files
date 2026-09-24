@@ -5,7 +5,17 @@ function plot_select_native2d_pressure(out,plotstep)
         return;
     end
 
-    figure;
+% Safe extraction of native2D structure
+    if isfield(out, 'native2D')
+        native2D = out.native2D;
+    else
+        native2D = struct();
+        if isfield(out, 'RPHist'), native2D.R = out.RPHist(:,:,plotstep); end
+        if isfield(out, 'ZPHist'), native2D.Z = out.ZPHist(:,:,plotstep); end
+        if isfield(out, 'PHist'),  native2D.P = out.PHist(:,:,plotstep); end
+    end
+
+    %figure;
     ax = gca;
     set(ax, 'FontSize', 22);
     if is_hybrid_fluid_plot(out)

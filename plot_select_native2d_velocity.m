@@ -1,12 +1,36 @@
 function plot_select_native2d_velocity(out,plotstep)
-    native2D = out.native2D;
+% Ensure top-level stopStep field exists for internal loop bounds
+    if ~isfield(out, 'stopStep') || isempty(out.stopStep)
+        if isfield(out, 'fluidHist')
+            out.stopStep = numel(out.fluidHist);
+        else
+            out.stopStep = plotstep;
+        end
+    end
+
+% Ensure top-level state is available for helper functions (state_for_plot_at_step, etc.)
+    if ~isfield(out, 'state') && isfield(out, 'stateHist') && ...
+            numel(out.stateHist) >= plotstep && ~isempty(out.stateHist{plotstep})
+        out.state = out.stateHist{plotstep};
+    end
+
+    % Safe extraction of native2D structure
+    if isfield(out, 'native2D')
+        native2D = out.native2D;
+    else
+        native2D = struct();
+        if isfield(out, 'RPHist'),     native2D.R  = out.RPHist(:,:,plotstep); end
+        if isfield(out, 'ZPHist'),     native2D.Z  = out.ZPHist(:,:,plotstep); end
+        if isfield(out, 'uzCHist'),    native2D.uz = out.uzCHist(:,:,plotstep); end
+    end
+
     if ~isfield(native2D, 'uz') || isempty(native2D.uz) || ...
             ~any(isfinite(native2D.uz(:)))
         warning('No finite native 2D velocity field is available to plot.');
         return;
     end
 
-    figure;
+    %figure;
     ax = gca;
     set(ax, 'FontSize', 22);
     if is_hybrid_fluid_plot(out)
