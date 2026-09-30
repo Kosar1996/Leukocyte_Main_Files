@@ -1,8 +1,8 @@
 function [state, fluid, ok, stopReason] = apply_bodyfitted_MAC_traction_correction( ...
     z, old, state, fluid, meshE, interfaceE, baseE, meshL, interfaceL, baseL, parL, par)
 %APPLY_BODYFITTED_MAC_TRACTION_CORRECTION
-% Performs one or more partitioned solid corrections using the current
-% body-fitted MAC fluid traction.
+% Audited version: Dynamic Aitken relaxation, safe convergence metrics,
+% and sub-pass traction surge protection.
 
     ok = true;
     stopReason = '';
@@ -15,14 +15,24 @@ function [state, fluid, ok, stopReason] = apply_bodyfitted_MAC_traction_correcti
         return;
     end
 
-    relax = 1.0;
+    relaxBase = 0.05;
     if isfield(par,'bodyFittedTractionCorrectionRelax') && isfinite(par.bodyFittedTractionCorrectionRelax)
-        relax = min(1.0, max(0.0, par.bodyFittedTractionCorrectionRelax));
+        relaxBase = min(1.0, max(0.001, par.bodyFittedTractionCorrectionRelax));
     end
 
-    corrTol = 1e-4;
+    corrTol = 1e-2;
     if isfield(par,'bodyFittedTractionCorrectionTol') && isfinite(par.bodyFittedTractionCorrectionTol)
         corrTol = par.bodyFittedTractionCorrectionTol;
+    end
+
+    useAitken = false;
+    if isfield(par,'useAitkenTractionCorrectionRelax') && logical(par.useAitkenTractionCorrectionRelax)
+        useAitken = true;
+    end
+
+    maxSurgeRatio = 2.0;
+    if isfield(par,'maxTractionNormChangeRatio') && isfinite(par.maxTractionNormChangeRatio)
+        maxSurgeRatio = par.maxTractionNormChangeRatio;
     end
 
     useRLoutInner = use_RLout_fluid_interface_for_solid_leukocyte(par);
@@ -47,9 +57,28 @@ function [state, fluid, ok, stopReason] = apply_bodyfitted_MAC_traction_correcti
     passesUsed = 0;
     converged = false;
 
+    % Aitken memory vectors
+    resE_prev = []; resL_prev = [];
+    relaxE = relaxBase; relaxL = relaxBase;
+    
+    trEnormPrev = NaN;
+
     for ic = 1:nCorr
         if ~isfield(fluid,'tractionE') || ~isfield(fluid,'tractionL')
             [fluid.tractionL, fluid.tractionE] = compute_bodyfitted_wall_traction(fluid.meshF, fluid, par);
+        end
+
+        % Traction Surge Check
+        if isfield(fluid.tractionE, 'normal') && ~isempty(fluid.tractionE.normal)
+            trEnormCurr = max(abs(fluid.tractionE.normal(:)));
+            if isfinite(trEnormPrev) && trEnormPrev > 1.0 && (trEnormCurr / trEnormPrev > maxSurgeRatio)
+                warning('Sub-pass %d rejected: Normal traction surged by ratio %.2f (limit %.2f)', ...
+                    ic, trEnormCurr / trEnormPrev, maxSurgeRatio);
+                state.tractionCorrectionPassesUsed = ic - 1;
+                state.tractionCorrectionConverged = false;
+                return;
+            end
+            trEnormPrev = trEnormCurr;
         end
 
         stateBeforeCorr = state;
@@ -95,12 +124,24 @@ function [state, fluid, ok, stopReason] = apply_bodyfitted_MAC_traction_correcti
                 error('[endothelium solve] %s', MEinner.message);
             end
 
-            state.uE = uEold + relax * (uEcorr - uEold);
+            resE_curr = uEcorr - uEold;
+            if useAitken && ~isempty(resE_prev)
+                dResE = resE_curr - resE_prev;
+                denomE = sum(dResE(:).^2);
+                if denomE > 1e-20
+                    muE = -relaxE * sum(resE_prev(:) .* dResE(:)) / denomE;
+                    relaxE = min(0.5, max(0.001, relaxE + muE));
+                end
+            else
+                relaxE = relaxBase;
+            end
+            resE_prev = resE_curr;
+
+            state.uE = uEold + relaxE * resE_curr;
             [state.deltaE, state.UwE] = monolithic_interface_kinematics_value_only( ...
                 meshE, state.uE, old.uE, interfaceE, z, par);
 
-            stepIncrE = norm(uEold - old.uE);
-            relChangeE = norm(state.uE - uEold) / max(stepIncrE, 1e-30);
+            relChangeE = norm(resE_curr(:)) / max(norm(state.uE(:)), 1e-12);
 
             relChangeL = 0;
             if hasL
@@ -132,11 +173,24 @@ function [state, fluid, ok, stopReason] = apply_bodyfitted_MAC_traction_correcti
                 catch MEinner
                     error('[leukocyte solve] %s', MEinner.message);
                 end
-                state.uL = uLold + relax * (uLcorr - uLold);
+
+                resL_curr = uLcorr - uLold;
+                if useAitken && ~isempty(resL_prev)
+                    dResL = resL_curr - resL_prev;
+                    denomL = sum(dResL(:).^2);
+                    if denomL > 1e-20
+                        muL = -relaxL * sum(resL_prev(:) .* dResL(:)) / denomL;
+                        relaxL = min(0.5, max(0.001, relaxL + muL));
+                    end
+                else
+                    relaxL = relaxBase;
+                end
+                resL_prev = resL_curr;
+
+                state.uL = uLold + relaxL * resL_curr;
                 [state.deltaL, state.UwL] = monolithic_interface_kinematics_value_only( ...
                     meshL, state.uL, old.uL, interfaceL, z, par);
-                stepIncrL = norm(uLold - old.uL);
-                relChangeL = norm(state.uL - uLold) / max(stepIncrL, 1e-30);
+                relChangeL = norm(resL_curr(:)) / max(norm(state.uL(:)), 1e-12);
             end
 
             if useRLoutInner

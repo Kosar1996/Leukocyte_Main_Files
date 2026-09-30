@@ -141,13 +141,46 @@ for e = 1:mesh.nelem
     end
 end
 
+% stress = struct();
+% stress.sigma_rr = sigma_rr_sum ./ max(count,1);
+% stress.sigma_tt = sigma_tt_sum ./ max(count,1);
+% stress.sigma_zz = sigma_zz_sum ./ max(count,1);
+% stress.sigma_rz = sigma_rz_sum ./ max(count,1);
+% % [NEW]: Added von Mises field to output struct
+% stress.vonMises = vm_sum       ./ max(count,1);
+
+% ========================= NEW CODE ==============================
+s_rr = sigma_rr_sum ./ max(count,1);
+s_tt = sigma_tt_sum ./ max(count,1);
+s_zz = sigma_zz_sum ./ max(count,1);
+s_rz = sigma_rz_sum ./ max(count,1);
+s_vm = vm_sum       ./ max(count,1);
+
+% Enforce Axisymmetric Boundary Regularity exactly at r = 0
+axis_nodes = find(mesh.nodes(:,1) < 1e-10);
+if ~isempty(axis_nodes)
+    % 1. Zero shear stress at symmetry axis
+    s_rz(axis_nodes) = 0.0;
+    
+    % 2. Enforce equal radial and hoop stress (sigma_rr = sigma_tt)
+    s_avg = 0.5 * (s_rr(axis_nodes) + s_tt(axis_nodes));
+    s_rr(axis_nodes) = s_avg;
+    s_tt(axis_nodes) = s_avg;
+    
+    % 3. Re-evaluate von Mises on axis using regularized stresses
+    s_vm(axis_nodes) = sqrt(0.5 * ((s_rr(axis_nodes) - s_tt(axis_nodes)).^2 + ...
+                                  (s_tt(axis_nodes) - s_zz(axis_nodes)).^2 + ...
+                                  (s_zz(axis_nodes) - s_rr(axis_nodes)).^2 + ...
+                                  6 * s_rz(axis_nodes).^2));
+end
+
 stress = struct();
-stress.sigma_rr = sigma_rr_sum ./ max(count,1);
-stress.sigma_tt = sigma_tt_sum ./ max(count,1);
-stress.sigma_zz = sigma_zz_sum ./ max(count,1);
-stress.sigma_rz = sigma_rz_sum ./ max(count,1);
-% [NEW]: Added von Mises field to output struct
-stress.vonMises = vm_sum       ./ max(count,1);
+stress.sigma_rr = s_rr;
+stress.sigma_tt = s_tt;
+stress.sigma_zz = s_zz;
+stress.sigma_rz = s_rz;
+stress.vonMises  = s_vm;
+% =================================================================
 
 end
 
@@ -159,16 +192,39 @@ znod = Znod + ue(2:2:end);
 
 Rg = N * Rnod;
 rg = N * rnod;
-if Rg <= 0 || rg <= 0
-    error('Non-positive radius encountered while post-processing stress.');
-end
+% if Rg <= 0 || rg <= 0
+%     error('Non-positive radius encountered while post-processing stress.');
+% end
+% 
+% drdR = dNdX(:,1).' * rnod;
+% drdZ = dNdX(:,2).' * rnod;
+% dzdR = dNdX(:,1).' * znod;
+% dzdZ = dNdX(:,2).' * znod;
+% 
+% F = [drdR,   0,    drdZ;
+%        0,   rg/Rg, 0;
+%      dzdR,   0,    dzdZ];
+
+% ========================= NEW CODE ==============================
+% Centerline Regularization & L'Hopital Safeguards
+epsR = 1e-14;
+Rg_eff = max(Rg, epsR);
+rg_eff = max(rg, epsR);
 
 drdR = dNdX(:,1).' * rnod;
 drdZ = dNdX(:,2).' * rnod;
 dzdR = dNdX(:,1).' * znod;
 dzdZ = dNdX(:,2).' * znod;
 
+% L'Hopital Limit for Hoop Stretch on axis
+if Rg < 1e-10
+    F22 = drdR;
+else
+    F22 = rg_eff / Rg_eff;
+end
+
 F = [drdR,   0,    drdZ;
-       0,   rg/Rg, 0;
+       0,   F22,   0;
      dzdR,   0,    dzdZ];
+% =================================================================
 end

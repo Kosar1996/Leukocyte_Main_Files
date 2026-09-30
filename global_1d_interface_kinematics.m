@@ -8,7 +8,6 @@ function [rAtZ, UwAtZ, Hr, HU] = global_1d_interface_kinematics( ...
     zq = zq(:);
     needSens = nargout > 2;
     ndof = 2 * size(mesh.nodes,1);
-
     isLeukocyte = min(mesh.nodes(:,1)) <= max(1e-12, 0.01 * max(par.RLout, 1e-12));
     if isLeukocyte
         exteriorRadius = global_1d_axis_radius(par);
@@ -21,8 +20,8 @@ function [rAtZ, UwAtZ, Hr, HU] = global_1d_interface_kinematics( ...
     zLo = min(zNew);
     zHi = max(zNew);
     tol = max(100 * eps(max(abs([zLo, zHi, zq(:).']))), 1e-12);
-    active = zq >= zLo - tol & zq <= zHi + tol;
-
+    active = find(zq >= zLo - tol & zq <= zHi + tol);
+        
     rAtZ = exteriorRadius * ones(size(zq));
     UwAtZ = zeros(size(zq));
 

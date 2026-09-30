@@ -1,7 +1,3 @@
-% ========================================================================
-% BODY-FITTED MAC CYLINDRICAL STOKES FLUID MODULE
-% Imported from mac_bodyfitted_2D_stokes_rigid_leukocyte_pressureBC.m
-% ========================================================================
 function mesh = build_body_fitted_gap_mesh(state, par)
 
     Nr = par.Nr;
@@ -28,15 +24,9 @@ function mesh = build_body_fitted_gap_mesh(state, par)
     Ruz = radial_cell_centers_from_faces(Rzf);
     etaC = radial_cell_centers_from_faces(etaF_c);
 
-    % Pressure-cell centers and radial-velocity faces at z centers
     Zp = repmat(zc,Nr,1);
     Zur = repmat(zc,Nr+1,1);
-
-    % Axial-velocity faces at z faces
     Zuz = repmat(zF,Nr,1);
-
-    % Radial cell faces at axial faces. These are used to compute the
-    % conservative axial flux areas in the continuity equation.
 
     mesh = struct();
     mesh.Nr = Nr;

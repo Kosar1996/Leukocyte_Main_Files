@@ -1,8 +1,8 @@
 % CHANGES TO LOOK FOR IN THIS FILE:
-% - Lines 12-25 (Issue 1 & 2): Added dt fallback guard to prevent division-by-zero (NaN/Inf)
-%   when par.dt <= 0, and expanded the viscoelastic activation check to recognize either
+% - Lines 12-25 (Issue 1 & 2): Added dt fallback guard to prevent division-by-zero (NaN/Inf) 
+%   when par.dt <= 0, and expanded the viscoelastic activation check to recognize either 
 %   par.useViscoelasticEndothelium or mapped leukocyte flags (par.useViscoelastic).
-% - Lines 130-136 & 185-191 (Issue 1): Guarded rate calculations (F - Fold)/dt and
+% - Lines 130-136 & 185-191 (Issue 1): Guarded rate calculations (F - Fold)/dt and 
 %   tangent factors (etaE/dt) inside element residual-tangent routines against zero dt.
 
 function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, par)

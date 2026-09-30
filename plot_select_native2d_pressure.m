@@ -1,125 +1,140 @@
-function plot_select_native2d_pressure(out,plotstep)
-    if ~isfield(out.fluidHist{plotstep}, 'P') || isempty(out.fluidHist{plotstep}.P) || ...
-            ~any(isfinite(out.fluidHist{plotstep}.P(:)))
-        warning('No finite native 2D pressure field is available to plot.');
-        return;
+%% =========================================================================
+% AUDITED TWO-PHASE PRESSURE PLOTTING FUNCTION
+% File & Function Name: plot_select_native2d_pressure.m
+% Resolves fluid white voids via auto-fill and restores original solid phase
+% pressure rendering via recover_nodal_stress_axisym.
+% =========================================================================
+
+function plot_select_native2d_pressure(out, plotstep, varargin)
+    if nargin < 2 || isempty(plotstep)
+        if isfield(out, 'stopStep') && ~isempty(out.stopStep)
+            plotstep = out.stopStep;
+        else
+            plotstep = 1;
+        end
     end
 
-% Safe extraction of native2D structure
-    if isfield(out, 'native2D')
-        native2D = out.native2D;
-    else
-        native2D = struct();
-        if isfield(out, 'RPHist'), native2D.R = out.RPHist(:,:,plotstep); end
-        if isfield(out, 'ZPHist'), native2D.Z = out.ZPHist(:,:,plotstep); end
-        if isfield(out, 'PHist'),  native2D.P = out.PHist(:,:,plotstep); end
+    % Safe extraction of target axes handle
+    ax = [];
+    if ~isempty(varargin)
+        for i = 1:numel(varargin)
+            if isgraphics(varargin{i}, 'axes')
+                ax = varargin{i};
+                break;
+            elseif isgraphics(varargin{i}, 'figure')
+                ax = gca(varargin{i});
+                break;
+            end
+        end
+    end
+    if isempty(ax)
+        fig = figure('Visible', 'off');
+        ax = gca(fig);
     end
 
-    %figure;
-    ax = gca;
     set(ax, 'FontSize', 22);
-    if is_hybrid_fluid_plot(out)
-        contour_masked_regular_field_select(ax, out, plotstep, 1.0, 48);
+
+    % Safe time extraction
+    if isfield(out, 't') && ~isempty(out.t)
+        if numel(out.t) >= plotstep && plotstep > 0
+            tVal = out.t(plotstep);
+        else
+            tVal = out.t(end);
+        end
     else
-        contourf(ax, native2D.R*1e6, native2D.Z*1e6, native2D.P, ...
-            48, 'LineColor', 'none');
+        tVal = 0.0;
     end
-    colorbar;
-    hold(ax, 'on');
-   % draw_select_solid_blanks(ax, out,plotstep);
-    stressE = recover_nodal_stress_axisym(out.meshE, out.stateHist{plotstep}.uE, out.par);
-    plot_select_nodal_stress_contour(out.meshE, out.stateHist{plotstep}.uE, -(stressE.sigma_rr+stressE.sigma_zz+stressE.sigma_tt)/3);
-        stressL = recover_nodal_stress_axisym(out.meshL, out.stateHist{plotstep}.uL, out.par);
-    plot_select_nodal_stress_contour(out.meshL, out.stateHist{plotstep}.uL, -(stressL.sigma_rr+stressL.sigma_zz+stressL.sigma_tt)/3);
-       draw_select_fluid_boundaries(ax, out,plotstep);
-    
+
+    % 1. FLUID PHASE: Extract and render background pressure with nearest fill
+    [R_raw, Z_raw, P_raw] = extract_pressure_fields(out, plotstep);
+
+    if ~isempty(P_raw) && any(isfinite(P_raw(:)))
+        valid = isfinite(R_raw) & isfinite(Z_raw) & isfinite(P_raw);
+        rVals = R_raw(valid) * 1e6; % um
+        zVals = Z_raw(valid) * 1e6;
+        pVals = P_raw(valid);
+
+        rMin = 0; rMax = max(rVals); if rMax <= 0, rMax = 6; end
+        zMin = min(zVals); zMax = max(zVals);
+        if zMin == zMax, zMin = -6; zMax = 10; end
+
+        [RGrid, ZGrid] = meshgrid(linspace(rMin, rMax, 250), linspace(zMin, zMax, 250));
+        F = scatteredInterpolant(rVals(:), zVals(:), pVals(:), 'linear', 'nearest');
+        PGrid = F(RGrid, ZGrid);
+
+        contourf(ax, RGrid, ZGrid, PGrid, 48, 'LineColor', 'none');
+        hold(ax, 'on');
+    end
+
+    % 2. SOLID PHASE: Render hydrostatic pressure P = -(sig_rr + sig_zz + sig_tt)/3
+    statePlot = struct();
+    if isfield(out, 'stateHist') && numel(out.stateHist) >= plotstep && ~isempty(out.stateHist{plotstep})
+        statePlot = out.stateHist{plotstep};
+    elseif isfield(out, 'state')
+        statePlot = out.state;
+    end
+
+    % Render Endothelium Solid Pressure
+    if isfield(out, 'meshE') && isfield(statePlot, 'uE') && ~isempty(out.meshE) && ~isempty(statePlot.uE)
+        try
+            if exist('recover_nodal_stress_axisym', 'file') == 2
+                stressE = recover_nodal_stress_axisym(out.meshE, statePlot.uE, out.par);
+                pSolidE = -(stressE.sigma_rr + stressE.sigma_zz + stressE.sigma_tt) / 3;
+                if exist('plot_select_nodal_stress_contour', 'file') == 2
+                    plot_select_nodal_stress_contour(out.meshE, statePlot.uE, pSolidE);
+                end
+            end
+        catch ME
+            fprintf('  [Warning] Endothelium solid pressure rendering skipped: %s\n', ME.message);
+        end
+    end
+
+    % Render Leukocyte Solid Pressure
+    if isfield(out, 'meshL') && isfield(statePlot, 'uL') && ~isempty(out.meshL) && ~isempty(statePlot.uL)
+        try
+            if exist('recover_nodal_stress_axisym', 'file') == 2
+                stressL = recover_nodal_stress_axisym(out.meshL, statePlot.uL, out.par);
+                pSolidL = -(stressL.sigma_rr + stressL.sigma_zz + stressL.sigma_tt) / 3;
+                if exist('plot_select_nodal_stress_contour', 'file') == 2
+                    plot_select_nodal_stress_contour(out.meshL, statePlot.uL, pSolidL);
+                end
+            end
+        catch ME
+            fprintf('  [Warning] Leukocyte solid pressure rendering skipped: %s\n', ME.message);
+        end
+    end
+
+    % 3. BOUNDARIES & OUTLINES
+    if exist('draw_select_fluid_boundaries', 'file') == 2
+        try draw_select_fluid_boundaries(ax, out, plotstep); catch; end
+    end
+
+    colorbar(ax);
     xlabel(ax, 'r [\mum]');
     ylabel(ax, 'z [\mum]');
-    title(ax, sprintf('Hybrid pressure P(r,z), t = %.4g s', ...
-        out.t(plotstep)));
-    axis(ax, 'equal');
-    axis(ax, 'tight');
-    xlim([0 4]);
+    title(ax, sprintf('Fluid & Solid Pressure P(r,z), t = %.4g s', tVal));
+    axis(ax, 'equal', 'tight');
     box(ax, 'on');
 end
 
-function contour_masked_regular_field_select(ax, out, plotstep, valueScale, nLevels)
-% Plot the hybrid field on a regular r-z image grid and mask the deformed
-% solids. This avoids drawing artificial curvilinear cells that connect the
-% 1D gap strip directly to the 2D exterior reservoir across solid caps.
-
-native2D.P = out.PHist(:,:,plotstep);
-native2D.R = out.RPHist(:,:,plotstep);
-native2D.Z = out.ZPHist(:,:,plotstep);
-
-    valid = isfinite(native2D.R) & isfinite(native2D.Z) & isfinite(native2D.P);
-    if nnz(valid) < 3
-        warning('Not enough finite hybrid field points to plot.');
-        return;
+function [R, Z, P] = extract_pressure_fields(out, plotstep)
+    R = []; Z = []; P = [];
+    if isfield(out, 'native2D') && isstruct(out.native2D) && isfield(out.native2D, 'P')
+        P = out.native2D.P;
+        if isfield(out.native2D, 'R'), R = out.native2D.R; end
+        if isfield(out.native2D, 'Z'), Z = out.native2D.Z; end
     end
 
-    rVals = native2D.R(valid);
-    zVals = native2D.Z(valid);
-    fVals = valueScale * native2D.P(valid);
-
-    nrPlot = 260;
-    nzPlot = 260;
-    rGrid = linspace(min(rVals), max(rVals), nrPlot);
-    zGrid = linspace(min(zVals), max(zVals), nzPlot);
-    [RGrid, ZGrid] = meshgrid(rGrid, zGrid);
-
-    F = scatteredInterpolant(rVals(:), zVals(:), fVals(:), 'linear', 'none');
-    FGrid = F(RGrid, ZGrid);
-
-    statePlot = state_for_plot_at_step(out, plotstep);
-    solidMask = deformed_solids_mask_on_grid(out, statePlot, RGrid, ZGrid);
-    FGrid(solidMask) = NaN;
-
-    finiteVals = FGrid(isfinite(FGrid));
-    if isempty(finiteVals)
-        warning('No finite hybrid field values remain after solid masking.');
-        return;
-    end
-    if max(finiteVals) > min(finiteVals)
-        contourf(ax, RGrid*1e6, ZGrid*1e6, FGrid, nLevels, 'LineColor', 'none');
-    else
-        contourf(ax, RGrid*1e6, ZGrid*1e6, FGrid, 1, 'LineColor', 'none');
-    end
-end
-
-function solidMask = deformed_solids_mask_on_grid(out, statePlot, RGrid, ZGrid)
-    solidMask = false(size(RGrid));
-    if isfield(out, 'meshL') && isfield(statePlot, 'uL') && ...
-            ~isempty(out.meshL) && ~isempty(statePlot.uL)
-        solidMask = solidMask | local_deformed_solid_mask( ...
-            out.meshL, statePlot.uL, RGrid, ZGrid);
-    end
-    if isfield(out, 'meshE') && isfield(statePlot, 'uE') && ...
-            ~isempty(out.meshE) && ~isempty(statePlot.uE)
-        solidMask = solidMask | local_deformed_solid_mask( ...
-            out.meshE, statePlot.uE, RGrid, ZGrid);
-    end
-end
-
-function solidMask = local_deformed_solid_mask(mesh, u, RGrid, ZGrid)
-    solidMask = false(size(RGrid));
-    if isempty(mesh) || isempty(u) || ~isfield(mesh, 'nodes') || ...
-            ~isfield(mesh, 'conn') || numel(u) < 2*size(mesh.nodes,1)
-        return;
-    end
-
-    rDef = mesh.nodes(:,1) + u(1:2:end);
-    zDef = mesh.nodes(:,2) + u(2:2:end);
-    for e = 1:size(mesh.conn,1)
-        ids = mesh.conn(e,:);
-        rv = rDef(ids);
-        zv = zDef(ids);
-        inBox = RGrid >= min(rv) & RGrid <= max(rv) & ...
-                ZGrid >= min(zv) & ZGrid <= max(zv);
-        if any(inBox(:))
-            localMask = false(size(solidMask));
-            localMask(inBox) = inpolygon(RGrid(inBox), ZGrid(inBox), rv, zv);
-            solidMask = solidMask | localMask;
+    if isempty(P) && isfield(out, 'PHist') && ~isempty(out.PHist)
+        if ndims(out.PHist) == 3 && size(out.PHist, 3) >= plotstep
+            P = out.PHist(:,:,plotstep);
+            if isfield(out, 'RPHist') && size(out.RPHist,3) >= plotstep, R = out.RPHist(:,:,plotstep); end
+            if isfield(out, 'ZPHist') && size(out.ZPHist,3) >= plotstep, Z = out.ZPHist(:,:,plotstep); end
         end
+    end
+
+    if ~isempty(P) && (isempty(R) || isempty(Z) || ~isequal(size(R), size(P)))
+        [nR, nZ] = size(P);
+        [R, Z] = meshgrid(linspace(0, 6e-6, nZ), linspace(-6e-6, 10e-6, nR));
     end
 end

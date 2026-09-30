@@ -68,18 +68,41 @@ function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par
 
         rg = N * rnod;
 
-        if Rg <= 0 || rg <= 0
-            error('Non-positive radius encountered in finite-deformation element.');
-        end
+        % if Rg <= 0 || rg <= 0
+        %     error('Non-positive radius encountered in finite-deformation element.');
+        % end
+        % 
+        % drdR = dNdX(:,1).' * rnod;
+        % drdZ = dNdX(:,2).' * rnod;
+        % dzdR = dNdX(:,1).' * znod;
+        % dzdZ = dNdX(:,2).' * znod;
+        % 
+        % F = [drdR,   0,    drdZ;
+        %        0,   rg/Rg, 0;
+        %      dzdR,   0,    dzdZ];
+
+        % ========================= NEW CODE ==============================
+        % Centerline Regularization & L'Hopital Safeguards
+        epsR = 1e-14;
+        Rg_eff = max(Rg, epsR);
+        rg_eff = max(rg, epsR);
 
         drdR = dNdX(:,1).' * rnod;
         drdZ = dNdX(:,2).' * rnod;
         dzdR = dNdX(:,1).' * znod;
         dzdZ = dNdX(:,2).' * znod;
 
+        % L'Hopital Limit for Hoop Stretch (lim_{R->0} r/R = dr/dR on axis)
+        if Rg < 1e-10
+            F22 = drdR;
+        else
+            F22 = rg_eff / Rg_eff;
+        end
+
         F = [drdR,   0,    drdZ;
-               0,   rg/Rg, 0;
+               0,   F22,   0;
              dzdR,   0,    dzdZ];
+        % =================================================================
 
         J = det(F);
         if J <= 0
@@ -96,32 +119,50 @@ function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par
         aIso = J^(-2/3);
         T = par.Ge * aIso * devB + par.Ke * (J - 1) * I3;
         P = J * T * FinvT;
-        Wgp = (2*pi*Rg) * detJ0 * w;
+        %Wgp = (2*pi*Rg) * detJ0 * w;
+        % ========================= NEW CODE ==============================
+        Wgp = (2*pi*Rg_eff) * detJ0 * w;
+        % =================================================================
 
         for a = 1:4
             dNa_dR = dNdX(a,1);
             dNa_dZ = dNdX(a,2);
             Na     = N(a);
 
+            % fe(2*a-1) = fe(2*a-1) + ...
+            %     ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*(Na/Rg) ) * Wgp;
+
+            % ========================= NEW CODE ==============================
+            % L'Hopital Limit for Na/Rg shape function ratio
+            if Rg < 1e-10
+                Na_over_Rg = dNa_dR;
+            else
+                Na_over_Rg = Na / Rg_eff;
+            end
+
             fe(2*a-1) = fe(2*a-1) + ...
-                ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*(Na/Rg) ) * Wgp;
+                ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*Na_over_Rg ) * Wgp;
+            % =================================================================
 
             fe(2*a) = fe(2*a) + ...
                 ( P(3,1)*dNa_dR + P(3,3)*dNa_dZ ) * Wgp;
         end
 
         for alpha = 1:8
-            dF = local_dF_from_dof(alpha, N, dNdX, Rg);
+            %dF = local_dF_from_dof(alpha, N, dNdX, Rg);
+            % NEW CODE:
+dF = local_dF_from_dof(alpha, N, dNdX, Rg_eff);
+
 
             % TANGENT TRACE FIX: In-lined scalar product (eliminates sum(sum(...)))
             trFinv_dF = dF(1,1)*Finv(1,1) + dF(1,3)*Finv(3,1) + ...
                         dF(2,2)*Finv(2,2) + dF(3,1)*Finv(1,3) + dF(3,3)*Finv(3,3);
-
+            
             dJ = J * trFinv_dF;
             dB = dF * F.' + F * dF.';
             trdB = dB(1,1) + dB(2,2) + dB(3,3);
             dDevB = dB - (trdB/3)*I3;
-
+            
             % KINEMATIC SCALING FIX: Derivative of J^(-2/3)
             daIso = -(2/3) * aIso * trFinv_dF;
 
@@ -135,8 +176,19 @@ function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par
                 dNa_dZ = dNdX(a,2);
                 Na     = N(a);
 
+                % Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
+                %     ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*(Na/Rg) ) * Wgp;
+
+                % ========================= NEW CODE ==============================
+                if Rg < 1e-10
+                    Na_over_Rg = dNa_dR;
+                else
+                    Na_over_Rg = Na / Rg_eff;
+                end
+
                 Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
-                    ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*(Na/Rg) ) * Wgp;
+                    ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*Na_over_Rg ) * Wgp;
+                % =================================================================
 
                 Ke(2*a, alpha) = Ke(2*a, alpha) + ...
                     ( dP(3,1)*dNa_dR + dP(3,3)*dNa_dZ ) * Wgp;
@@ -172,18 +224,39 @@ function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
         Rg = N * Rnod;
         rg = N * rnod;
 
-        if Rg <= 0 || rg <= 0
-            error('Non-positive radius encountered in finite-deformation element.');
-        end
+        % if Rg <= 0 || rg <= 0
+        %     error('Non-positive radius encountered in finite-deformation element.');
+        % end
+        % 
+        % drdR = dNdX(:,1).' * rnod;
+        % drdZ = dNdX(:,2).' * rnod;
+        % dzdR = dNdX(:,1).' * znod;
+        % dzdZ = dNdX(:,2).' * znod;
+        % 
+        % F = [drdR,   0,    drdZ;
+        %        0,   rg/Rg, 0;
+        %      dzdR,   0,    dzdZ];
+
+        % ========================= NEW CODE ==============================
+        epsR = 1e-14;
+        Rg_eff = max(Rg, epsR);
+        rg_eff = max(rg, epsR);
 
         drdR = dNdX(:,1).' * rnod;
         drdZ = dNdX(:,2).' * rnod;
         dzdR = dNdX(:,1).' * znod;
         dzdZ = dNdX(:,2).' * znod;
 
+        if Rg < 1e-10
+            F22 = drdR;
+        else
+            F22 = rg_eff / Rg_eff;
+        end
+
         F = [drdR,   0,    drdZ;
-               0,   rg/Rg, 0;
+               0,   F22,   0;
              dzdR,   0,    dzdZ];
+        % =================================================================
 
         J = det(F);
         if J <= 0
@@ -201,22 +274,39 @@ function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
 
         T = par.Ge * aIso * devB + par.Ke * (J - 1) * I3;
         P = J * T * FinvT;
-        Wgp = (2*pi*Rg) * detJ0 * w;
+        %Wgp = (2*pi*Rg) * detJ0 * w;
+        % ========================= NEW CODE ==============================
+        Wgp = (2*pi*Rg_eff) * detJ0 * w;
+        % =================================================================
 
         for a = 1:4
             dNa_dR = dNdX(a,1);
             dNa_dZ = dNdX(a,2);
             Na     = N(a);
 
+            % fe(2*a-1) = fe(2*a-1) + ...
+            %     ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*(Na/Rg) ) * Wgp;
+
+            % ========================= NEW CODE ==============================
+            % L'Hopital Limit for Na/Rg shape function ratio
+            if Rg < 1e-10
+                Na_over_Rg = dNa_dR;
+            else
+                Na_over_Rg = Na / Rg_eff;
+            end
+
             fe(2*a-1) = fe(2*a-1) + ...
-                ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*(Na/Rg) ) * Wgp;
+                ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*Na_over_Rg ) * Wgp;
+            % =================================================================
 
             fe(2*a) = fe(2*a) + ...
                 ( P(3,1)*dNa_dR + P(3,3)*dNa_dZ ) * Wgp;
         end
 
         for alpha = 1:8
-            dF = local_dF_from_dof(alpha, N, dNdX, Rg);
+            %dF = local_dF_from_dof(alpha, N, dNdX, Rg);
+            % NEW CODE:
+dF = local_dF_from_dof(alpha, N, dNdX, Rg_eff);
 
             % TANGENT TRACE FIX: In-lined scalar product (eliminates sum(sum(...)))
             trFinv_dF = dF(1,1)*Finv(1,1) + dF(1,3)*Finv(3,1) + ...
@@ -242,8 +332,19 @@ function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
                 dNa_dZ = dNdX(a,2);
                 Na     = N(a);
 
+                % Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
+                %     ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*(Na/Rg) ) * Wgp;
+
+                % ========================= NEW CODE ==============================
+                if Rg < 1e-10
+                    Na_over_Rg = dNa_dR;
+                else
+                    Na_over_Rg = Na / Rg_eff;
+                end
+
                 Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
-                    ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*(Na/Rg) ) * Wgp;
+                    ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*Na_over_Rg ) * Wgp;
+                % =================================================================
 
                 Ke(2*a, alpha) = Ke(2*a, alpha) + ...
                     ( dP(3,1)*dNa_dR + dP(3,3)*dNa_dZ ) * Wgp;

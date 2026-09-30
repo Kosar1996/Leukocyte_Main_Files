@@ -15,9 +15,23 @@ function dF = local_dF_from_dof(alpha, N, dNdX, Rg)
         d_drdR  = dNdX(aNode,1);
         d_drdZ  = dNdX(aNode,2);
 
+        % dF(1,1) = d_drdR;
+        % dF(1,3) = d_drdZ;
+        % dF(2,2) = d_r_g / Rg;
+        % ========================= NEW CODE ==============================
+        epsR = 1e-14;
+        Rg_eff = max(Rg, epsR);
+
         dF(1,1) = d_drdR;
         dF(1,3) = d_drdZ;
-        dF(2,2) = d_r_g / Rg;
+
+        % L'Hopital Limit for dF(2,2) variation (lim_{R->0} Na/R = dNa/dR)
+        if Rg < 1e-10
+            dF(2,2) = d_drdR;
+        else
+            dF(2,2) = d_r_g / Rg_eff;
+        end
+        % =================================================================
 
     else
         % Only z-components vary

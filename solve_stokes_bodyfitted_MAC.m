@@ -1,6 +1,3 @@
-%% ============================================================
-% Body-fitted MAC Stokes solver
-% ============================================================
 function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
 
     Nr = mesh.Nr;
@@ -8,15 +5,38 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
     dz = mesh.dz;
     mu = par.mu;
 
-    % Optional unsteady-Stokes term: rho*du/dt added to the momentum
-    % equations (backward Euler in the already-available par.dt), instead
-    % of the pure steady Stokes balance -mu*lap(u) + grad(p) = 0 used by
-    % default. Off unless explicitly enabled -- when off, massCoef=0 and
-    % every line below that uses it is a no-op, so default behavior is
-    % byte-for-byte unchanged. rho is not otherwise a codebase parameter
-    % (this solver has no density anywhere else); default 1000 kg/m^3
-    % (water/plasma-like, consistent with the existing mu=1.2e-3 Pa*s) if
-    % not explicitly set on par.
+    if isfield(bc, 'urL') && ~isempty(bc.urL)
+        bc.urL = reshape(bc.urL, 1, Nz);
+    else
+        bc.urL = zeros(1, Nz);
+    end
+
+    if isfield(bc, 'urE') && ~isempty(bc.urE)
+        bc.urE = reshape(bc.urE, 1, Nz);
+    else
+        bc.urE = zeros(1, Nz);
+    end
+
+    if isfield(bc, 'uzL') && ~isempty(bc.uzL)
+        uzL_c = bc.uzL(:);
+    else
+        uzL_c = zeros(Nz, 1);
+    end
+
+    if isfield(bc, 'uzE') && ~isempty(bc.uzE)
+        uzE_c = bc.uzE(:);
+    else
+        uzE_c = zeros(Nz, 1);
+    end
+
+    if numel(state.zc) == Nz
+        uzL_faces = safe_interp1_same_or_resample(state.zc, uzL_c, mesh.zF, 'bc.uzL_faces');
+        uzE_faces = safe_interp1_same_or_resample(state.zc, uzE_c, mesh.zF, 'bc.uzE_faces');
+    else
+        uzL_faces = zeros(Nz+1, 1);
+        uzE_faces = zeros(Nz+1, 1);
+    end
+
     useUnsteady = isfield(par, 'useUnsteadyStokes') && par.useUnsteadyStokes && ...
         isfield(par, 'dt') && isfinite(par.dt) && par.dt > 0;
     massCoef = 0;
@@ -29,22 +49,10 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
     end
     haveUrPrev = useUnsteady && isfield(bc, 'urPrev') && isequal(size(bc.urPrev), [Nr+1, Nz]);
     haveUzPrev = useUnsteady && isfield(bc, 'uzPrev') && isequal(size(bc.uzPrev), [Nr, Nz+1]);
-    % CAUTION for future callers: bc.urPrev/uzPrev are currently only
-    % populated by solve_fluid_2D_bodyfitted_MAC.m (Pure/Full 2D MAC mode).
-    % solve_fluid_hybrid_gap1d_exterior2d.m and
-    % solve_fluid_hybrid_gap1d_exterior2d_withnodes.m call this function
-    % directly and do not set them. Enabling par.useUnsteadyStokes for
-    % Hybrid mode without also wiring that plumbing through will NOT error
-    % -- it silently falls back to treating every step as starting from
-    % rest (haveUrPrev/haveUzPrev false), which is safe but not a correct
-    % time-history-aware unsteady solve. Wire the same bc.urPrev/uzPrev
-    % pattern into those two callers before relying on this flag there.
 
-    % Unknown numbering
     pId = reshape(1:Nr*Nz, Nr, Nz);
     Np = Nr*Nz;
 
-    % ur unknowns: interior radial faces only, i=2:Nr
     urId = zeros(Nr+1,Nz);
     urList = [];
     count = 0;
@@ -57,7 +65,6 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
     end
     Nur = count;
 
-    % uz unknowns: all axial faces
     uzId = reshape(1:(Nr*(Nz+1)), Nr, Nz+1);
     Nuz = Nr*(Nz+1);
 
@@ -87,19 +94,7 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
         end
     end
 
-    function val = uz_wall(side,jFace)
-        zq = mesh.zF(jFace);
-        switch side
-            case 'L'
-                val = interp1(state.zc, bc.uzL, zq, 'linear','extrap');
-            case 'E'
-                val = interp1(state.zc, bc.uzE, zq, 'linear','extrap');
-        end
-    end
-
-    %% -------------------------------
-    % Radial momentum, ur on interior radial faces
-    % -------------------------------
+    %% Radial Momentum
     for a = 1:Nur
         lin = urList(a);
         [i,j] = ind2sub([Nr+1,Nz], lin);
@@ -111,7 +106,6 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
         drP = max(rFaces(i+1) - rFaces(i), 1e-30);
         drCV = max(0.5 * (drM + drP), 1e-30);
 
-        % Cylindrical radial diffusion coefficients at radial face
         rM = max(0.5 * (rFaces(i-1) + rFaces(i)), 1e-30);
         rP = max(0.5 * (rFaces(i) + rFaces(i+1)), 1e-30);
         cM = rM/(r*drM*drCV);
@@ -129,25 +123,21 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
             end
         end
 
-        % radial minus neighbor
         if i-1 >= 2
             add(row, urId(i-1,j), -mu*cM);
         else
             rhs(row) = rhs(row) + mu*cM*ur_known(1,j);
         end
 
-        % radial plus neighbor
         if i+1 <= Nr
             add(row, urId(i+1,j), -mu*cP);
         else
             rhs(row) = rhs(row) + mu*cP*ur_known(Nr+1,j);
         end
 
-        % axial neighbors: zero-gradient at open z ends
         if j > 1
             add(row, urId(i,j-1), -mu*cZ);
         else
-            center = center - cZ; %#ok<NASGU>
             add(row,row,-mu*cZ);
         end
 
@@ -157,7 +147,6 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
             add(row,row,-mu*cZ);
         end
 
-        % Pressure gradient dp/dr across the radial face
         idL = pId(i-1,j);
         idR = pId(i,j);
         drPCells = max(mesh.Rp(i,j) - mesh.Rp(i-1,j), 1e-30);
@@ -165,9 +154,7 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
         add(row, Nu + idL, -1/drPCells);
     end
 
-    %% -------------------------------
-    % Axial momentum, uz at axial faces
-    % -------------------------------
+    %% Axial Momentum
     for j = 1:Nz+1
         for i = 1:Nr
             localUz = uzId(i,j);
@@ -177,7 +164,6 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
             rFaces = mesh.Rzf(:,j);
             r = max(rCells(i), 1e-30);
 
-            % Use local nonuniform radial spacing at the axial face.
             drCell = max(rFaces(i+1) - rFaces(i), 1e-30);
             if i > 1
                 drM = max(rCells(i) - rCells(i-1), 1e-30);
@@ -198,21 +184,18 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
 
             center = cM + cP;
 
-            % radial minus neighbor or inner wall no-slip
             if i > 1
                 add(row, Nur + uzId(i-1,j), -mu*cM);
             else
-                rhs(row) = rhs(row) + mu*cM*uz_wall('L',j);
+                rhs(row) = rhs(row) + mu*cM*uzL_faces(j);
             end
 
-            % radial plus neighbor or outer wall no-slip
             if i < Nr
                 add(row, Nur + uzId(i+1,j), -mu*cP);
             else
-                rhs(row) = rhs(row) + mu*cP*uz_wall('E',j);
+                rhs(row) = rhs(row) + mu*cP*uzE_faces(j);
             end
 
-            % axial diffusion neighbors; zero-gradient at open ends
             if j > 1
                 add(row, Nur + uzId(i,j-1), -mu*cZ);
                 center = center + cZ;
@@ -231,7 +214,6 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
                 end
             end
 
-            % Pressure gradient dp/dz
             if j == 1
                 pIn = prescribed_pressure(par,'in',mesh.Ruz(i,j),tNow);
                 idT = pId(i,1);
@@ -251,31 +233,18 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
         end
     end
 
-    %% -------------------------------
-    % Continuity / pressure equations
-    % -------------------------------
+    %% Continuity / Pressure Equations
     for j = 1:Nz
         for i = 1:Nr
             pLocal = pId(i,j);
             row = Nu + pLocal;
 
-            % Conservative finite-volume continuity per radian:
-            %
-            %   Fr_R - Fr_L + Fz_T - Fz_B = 0
-            %
-            % where
-            %   Fr = dz * r * u_r
-            %   Fz = A_z * u_z
-            %   A_z = 0.5*(r_outer^2 - r_inner^2)
-
             rL = mesh.Rur(i,j);
             rR = mesh.Rur(i+1,j);
 
-            % Cell volume per radian
             V = 0.5*(rR^2 - rL^2)*dz;
             V = max(V, 1e-30);
 
-            % Radial flux coefficients
             cL = -dz*rL/V;
             cR =  dz*rR/V;
 
@@ -291,7 +260,6 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
                 add(row, urId(i+1,j), cR);
             end
 
-            % Axial-face areas for this eta-cell
             rB_L = mesh.Rzf(i,  j);
             rB_R = mesh.Rzf(i+1,j);
             rT_L = mesh.Rzf(i,  j+1);
@@ -300,7 +268,6 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
             AB = 0.5*(rB_R^2 - rB_L^2);
             AT = 0.5*(rT_R^2 - rT_L^2);
 
-            % Axial flux coefficients
             add(row, Nur + uzId(i,j),   -AB/V);
             add(row, Nur + uzId(i,j+1),  AT/V);
 
@@ -310,11 +277,8 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
         end
     end
 
-    %% -------------------------------
-    % Assemble and solve
-    % -------------------------------
+    %% Assemble and Solve
     A = sparse(ii,jj,vv,Ntot,Ntot);
-
     rowScale = 1 ./ max(sum(abs(A),2), 1);
     S = spdiags(rowScale,0,Ntot,Ntot);
 
@@ -322,20 +286,12 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
 
     linRes = norm(A*x - rhs, inf) / max(norm(rhs, inf), 1);
 
-    % Diagnostic only, default off: reports the row-scaled system's
-    % estimated condition number (1-norm, via condest -- exact cond() is
-    % too expensive for a matrix this size). Added Sep 3 to directly test
-    % Issue 2 (fluid matrix conditioning near the gap floor) rather than
-    % inferring it only through Issue 3's side effects. No effect on the
-    % solve itself; purely an optional extra field on the returned struct.
     condNumber = NaN;
     if isfield(par, 'reportMatrixConditionNumber') && par.reportMatrixConditionNumber
         condNumber = condest(S*A);
     end
 
-    %% -------------------------------
-    % Recover arrays
-    % -------------------------------
+    %% Recover Arrays
     P = reshape(x(Nu+1:Nu+Np), Nr, Nz);
 
     ur = nan(Nr+1,Nz);
@@ -353,7 +309,6 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
     uzC = 0.5*(uz(:,1:Nz) + uz(:,2:Nz+1));
 
     div = compute_bodyfitted_divergence(mesh, ur, uz);
-
     contMask = true(Nr,Nz);
     divInf = max(abs(div(contMask)),[],'omitnan');
 
@@ -375,7 +330,6 @@ function fluid = solve_stokes_bodyfitted_MAC(mesh, state, bc, par, tNow)
 end
 
 function pval = prescribed_pressure(par, side, r, t) 
-
     switch lower(side)
         case 'in'
             if isfield(par,'pInFun') && ~isempty(par.pInFun)
@@ -397,7 +351,6 @@ function pval = prescribed_pressure(par, side, r, t)
 end
 
 function div = compute_bodyfitted_divergence(mesh, ur, uz)
-
     Nr = mesh.Nr;
     Nz = mesh.Nz;
     dz = mesh.dz;
@@ -406,7 +359,6 @@ function div = compute_bodyfitted_divergence(mesh, ur, uz)
 
     for j = 1:Nz
         for i = 1:Nr
-
             rL = mesh.Rur(i,j);
             rR = mesh.Rur(i+1,j);
 

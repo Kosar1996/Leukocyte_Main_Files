@@ -426,6 +426,15 @@ function par = softlube_finish_derived_parameters(par)
         end
     end
 
+    % ==================================== ADD THIS FIX ========================================
+    % STRICT GUARD: Full 2D Fluid Mode explicitly overrides any residual hybrid flags
+    if isfield(par, 'useFull2DFluid') && par.useFull2DFluid
+        par.useHybridGap1DExterior2DFluid = false;
+        par.useGlobal2DPressureTraction = false;
+        par.useSmoothHybridBlending = false;
+    end
+% ==========================================================================================
+
     par.dtMin = min(par.dtMin, par.dt);
     if ~isfield(par, 'leukocytePressureSupportZ') || isempty(par.leukocytePressureSupportZ)
         par.leukocytePressureSupportZ = [par.zMin, par.zMax];
