@@ -6,6 +6,11 @@ function stateNew = solve_monolithic_two_solids_fsolve_timestep( ...
 % Residual-only fully monolithic coupling for deformable leukocyte:
 % unknown vector y = [uE_free/uScale; uL_free/uScale; p_internal/pScale].
 
+% Ensure 1-based indexing for boundary and support arrays
+if any(baseE(:) == 0), baseE = baseE + 1; end
+if any(baseL(:) == 0), baseL = baseL + 1; end
+if exist('interfaceE', 'var') && any(interfaceE(:) == 0), interfaceE = interfaceE + 1; end
+
 ndofE = size(meshE.nodes,1) * 2;
 ndofL = size(meshL.nodes,1) * 2;
 N = numel(z);
@@ -29,6 +34,7 @@ if isfield(par, 'twoSolidInterfaceOnlyTest') && par.twoSolidInterfaceOnlyTest
         numel(freeE), numel(freeL), max(numel(z)-2,0));
 end
 
+% Synchronized monolithic scaling factors
 JuE = par.uScaleMono;
 JuL = par.uScaleMono;
 Jp  = par.pScaleMono;
@@ -44,60 +50,78 @@ end
 if isfield(par, 'monoFluidAbsTol') && isfinite(par.monoFluidAbsTol) && par.monoFluidAbsTol > 0
     fluidTarget = par.monoFluidAbsTol;
 end
+% =========================================================================
+% DIAGNOSTIC AUDIT: VERIFY PREDICTOR INPUT BUFFERS
+% =========================================================================
+fprintf('\n=== [FSOLVE INPUT DIAGNOSTIC] ===\n');
+fprintf('  - isfield(old, "uEPrev") : %d\n', isfield(old, 'uEPrev') && ~isempty(old.uEPrev));
+fprintf('  - isfield(old, "uLPrev") : %d\n', isfield(old, 'uLPrev') && ~isempty(old.uLPrev));
+fprintf('  - isfield(old, "pPrev")  : %d\n', isfield(old, 'pPrev') && ~isempty(old.pPrev));
 
+if isfield(old, 'uEPrev') && ~isempty(old.uEPrev)
+    norm_diff_E = norm(old.uE - old.uEPrev);
+    fprintf('  - norm(uE13 - uE12)      : %.6e m\n', norm_diff_E);
+end
+if isfield(old, 'uLPrev') && ~isempty(old.uLPrev)
+    norm_diff_L = norm(old.uL - old.uLPrev);
+    fprintf('  - norm(uL13 - uL12)      : %.6e m\n', norm_diff_L);
+end
+fprintf('=================================\n\n');
+
+% Boundary condition enforcement for base state
 uE0 = old.uE;
 uL0 = old.uL;
 p0  = old.p;
 if ~all(isfinite(p0)) || numel(p0) ~= N
     p0 = linspace(par.pIn, par.pOut, N).';
 end
-
-if isfield(par, 'useMonoPredictor') && par.useMonoPredictor
-    if isfield(old, 'uEPrev') && isfield(old, 'uLPrev') && isfield(old, 'pPrev') && isfield(old, 'dtPrev')
-        predScale = min(1.0, par.dt / max(old.dtPrev, eps));
-        uEPred = old.uE + predScale * (old.uE - old.uEPrev);
-        uLPred = old.uL + predScale * (old.uL - old.uLPrev);
-        pPred  = old.p  + predScale * (old.p  - old.pPrev);
-        pPred(1) = par.pIn;
-        pPred(end) = par.pOut;
-
-        [deltaEPred, ~] = monolithic_interface_kinematics_value_only( ...
-            meshE, uEPred, old.uE, interfaceE, z, par);
-        [deltaLPred, ~] = monolithic_interface_kinematics_value_only( ...
-            meshL, uLPred, old.uL, interfaceL, z, par);
-
-        predGeometryOk = false;
-        if all(isfinite(uEPred)) && all(isfinite(uLPred))
-            try
-                assert_solid_geometry_ok( ...
-                    solid_geometry_quality(meshE, uEPred, 'endothelium predictor'), par);
-                assert_solid_geometry_ok( ...
-                    solid_geometry_quality(meshL, uLPred, 'leukocyte predictor'), par);
-                predGeometryOk = true;
-            catch
-                predGeometryOk = false;
-            end
-        end
-
-        if all(isfinite(uEPred)) && all(isfinite(uLPred)) && all(isfinite(pPred)) && ...
-                all(deltaEPred - deltaLPred > par.minGap) && predGeometryOk
-            uE0 = uEPred;
-            uL0 = uLPred;
-            p0 = pPred;
-        end
-    end
-end
-
 uE0(fixE) = valsE;
 uL0(fixL) = valsL;
-p0(1) = par.pIn;
+p0(1)   = par.pIn;
 p0(end) = par.pOut;
 
-y0 = [
-    uE0(freeE) / JuE
-    uL0(freeL) / JuL
-    p0(2:end-1) / Jp
+
+% =========================================================================
+% MONOLITHIC PREDICTOR WARM-START INITIAL GUESS VECTOR (y0)
+% =========================================================================
+hasEPrev = isfield(old, 'uEPrev') && ~isempty(old.uEPrev) && ~isequal(old.uE, old.uEPrev);
+hasLPrev = isfield(old, 'uLPrev') && ~isempty(old.uLPrev) && ~isequal(old.uL, old.uLPrev);
+
+usePredictor = isfield(par, 'useMonoPredictor') && par.useMonoPredictor && hasEPrev && hasLPrev;
+
+if usePredictor
+    predScale = 1.0;
+    if isfield(old, 'dtPrev') && old.dtPrev > 0
+        predScale = min(1.0, par.dt / old.dtPrev);
+    end
+    
+    % Extrapolate displacements u^{14}_pred = u^{13} + 1.0 * (u^{13} - u^{12})
+    uEPred = old.uE + predScale * (old.uE - old.uEPrev);
+    uLPred = old.uL + predScale * (old.uL - old.uLPrev);
+    
+    % Anchor pressure guess to p0
+    pPred = p0; 
+    
+    uEPred(fixE) = valsE;
+    uLPred(fixL) = valsL;
+    
+    y0 = [
+        uEPred(freeE) / JuE
+        uLPred(freeL) / JuL
+        pPred(2:end-1) / Jp
     ];
+    
+    fprintf('   [fsolve Predictor] Active: Extrapolated displacements y0 with base p0.\n');
+    fprintf('                      ||uEPred-uE0|| = %.3e m | ||uLPred-uL0|| = %.3e m\n', ...
+        norm(uEPred - uE0), norm(uLPred - uL0));
+else
+    y0 = [
+        uE0(freeE) / JuE
+        uL0(freeL) / JuL
+        p0(2:end-1) / Jp
+    ];
+    fprintf('   [fsolve Predictor] Fallback: y0 initialized without displacement history.\n');
+end
 
 nE = numel(freeE);
 nL = numel(freeL);
@@ -105,6 +129,7 @@ nL = numel(freeL);
 useSemiJac = isfield(par, 'useTwoSolidSemiAnalyticalJacobian') && ...
     par.useTwoSolidSemiAnalyticalJacobian;
 
+% Construct objective function handle BEFORE pre-fsolve diagnostics
 if useSemiJac
     fun = @(y) monolithic_two_solids_residual_jacobian_scaled( ...
         y, old, meshE, interfaceE, baseE, ...
@@ -118,6 +143,15 @@ else
         z, par, freeE, fixE, valsE, freeL, fixL, valsL, ...
         JuE, JuL, Jp, solidTargetE, solidTargetL, fluidTarget);
 end
+
+% DIAGNOSTIC AUDIT: Print exact initial residual of y0
+if useSemiJac
+    [R_y0, ~] = fun(y0);
+else
+    R_y0 = fun(y0);
+end
+fprintf('   [y0 Residual Verification] Initial norm ||f(y0)||^2 = %.5e\n\n', norm(R_y0)^2);
+
 fsolveDisplay = 'iter';
 if isfield(par, 'fsolveDisplay')
     fsolveDisplay = par.fsolveDisplay;
@@ -133,10 +167,6 @@ if isfield(par, 'checkTwoSolidAnalyticalJacobian') && par.checkTwoSolidAnalytica
     par.checkTwoSolidAnalyticalJacobian = false;
 end
 
-algorithms = {'trust-region-dogleg'};
-if isfield(par, 'fsolveAlgorithms') && ~isempty(par.fsolveAlgorithms)
-    algorithms = par.fsolveAlgorithms;
-end
 
 bestY = y0;
 bestR = [];
@@ -144,31 +174,28 @@ bestExitflag = NaN;
 bestOutput = struct('iterations', 0);
 bestScaledRes = inf;
 
+% Include Levenberg-Marquardt fallback algorithm
+algorithms = {'trust-region-dogleg', 'levenberg-marquardt'};
+
 for attempt = 1:numel(algorithms)
-    if useSemiJac
-        opts = optimoptions('fsolve', ...
-            'Algorithm', algorithms{attempt}, ...
-            'Display', fsolveDisplay, ...
-            'SpecifyObjectiveGradient', true, ...
-            'FunctionTolerance', 1e-8, ...
-            'StepTolerance', 1e-8, ...
-            'OptimalityTolerance', 1e-8, ...
-            'MaxIterations', par.maxNewtonMono, ...
-            'MaxFunctionEvaluations', maxFun);
-    else
-        opts = optimoptions('fsolve', ...
-            'Algorithm', algorithms{attempt}, ...
-            'Display', fsolveDisplay, ...
-            'FiniteDifferenceType', 'forward', ...
-            'FunctionTolerance', 1e-8, ...
-            'StepTolerance', 1e-8, ...
-            'OptimalityTolerance', 1e-8, ...
-            'MaxIterations', par.maxNewtonMono, ...
-            'MaxFunctionEvaluations', maxFun);
-    end
+    typicalX_scale = ones(size(y0)); 
+
+    opts = optimoptions('fsolve', ...
+        'Algorithm', algorithms{attempt}, ...
+        'Display', fsolveDisplay, ...
+        'SpecifyObjectiveGradient', useSemiJac, ...
+        'ScaleProblem', 'Jacobian', ...           
+        'TypicalX', typicalX_scale, ...            
+        'FunctionTolerance', 1e-6, ...
+        'StepTolerance', 1e-6, ...
+        'OptimalityTolerance', 1e-6, ...
+        'MaxIterations', par.maxNewtonMono, ...
+        'MaxFunctionEvaluations', maxFun);
+
     [yAttempt, RAttempt, exitflagAttempt, outputAttempt] = fsolve(fun, y0, opts);
     scaledAttempt = norm(RAttempt, inf);
-    if scaledAttempt < bestScaledRes || exitflagAttempt > 0 && bestExitflag <= 0
+    
+    if scaledAttempt < bestScaledRes || (exitflagAttempt > 0 && bestExitflag <= 0)
         bestY = yAttempt;
         bestR = RAttempt;
         bestExitflag = exitflagAttempt;
@@ -200,12 +227,16 @@ assert_solid_geometry_ok( ...
     meshL, interfaceL, baseL, parL, ...
     z, par, freeE, fixE, valsE, freeL, fixL, valsL, JuE, JuL, Jp);
 
-% --- INTERMEDIATE FSOLVE DIAGNOSTICS ---
-fprintf('   [fsolve Sub-Step] exitflag = %d | iter = %d | scaledRes = %.3e | gapMin = %.3e m\n', ...
-    exitflag, output.iterations, norm(Rsol, inf), gapMin);
+% ========================= DIAGNOSTIC PRINT =========================
+fprintf('   [fsolve Mono Sub-Step] Exitflag = %d | Iters = %d | ScaledRes = %.3e | minGap = %.3e um\n', ...
+    exitflag, output.iterations, norm(Rsol, inf), gapMin * 1e6);
 
-% NEW / UPDATED GUARDED FSOLVE RECOVERY
-% =========================================================================
+if gapMin <= par.minGap
+    fprintf('   [WARNING: GAP VIOLATION] minGap threshold reached (h_min = %.4e um <= %.4e um).\n', ...
+        gapMin * 1e6, par.minGap * 1e6);
+end
+% ====================================================================
+
 scaledRes = norm(Rsol, inf);
 
 acceptByPhysicalResidual = ...
@@ -213,14 +244,40 @@ acceptByPhysicalResidual = ...
 acceptByScaledResidual = scaledRes < 1e-4;
 
 % 1. Intercept non-convergence (exitflag <= 0) and apply gentle soft-relaxation
+% 1. Backtracking Armijo Line-Search Guard on Non-Convergence
 if exitflag <= 0 && ~(acceptByPhysicalResidual || acceptByScaledResidual)
-    fprintf('\n   [MONOLITHIC GUARD] fsolve exitflag=%d (scaledRes = %.3e). Applying soft 50%% relaxation recovery.\n', ...
+    fprintf('\n   [MONOLITHIC GUARD] fsolve exitflag=%d (scaledRes = %.3e). Executing Armijo Line-Search...\n', ...
         exitflag, scaledRes);
 
-    % Gentle damping: retain 50% of updated vector state so outer Aitken loop can proceed
-    ySol = y0 + 0.50 * (ySol - y0);
+    normR0 = norm(R_y0);
+    dy = ySol - y0;
+    alpha_ls = 0.50;
+    ls_success = false;
+    
+    for ls_iter = 1:5
+        yCandidate = y0 + alpha_ls * dy;
+        if useSemiJac
+            [RCand, ~] = fun(yCandidate);
+        else
+            RCand = fun(yCandidate);
+        end
+        
+        if norm(RCand) < normR0
+            fprintf('   [Line Search] Accepted step size alpha = %.4f (Norm: %.3e -> %.3e)\n', ...
+                alpha_ls, normR0, norm(RCand));
+            ySol = yCandidate;
+            ls_success = true;
+            break;
+        end
+        alpha_ls = alpha_ls * 0.5;
+    end
+    
+    if ~ls_success
+        error('Monolithic:fsolveStall', ...
+            'fsolve failed to converge (exitflag = %d, residual = %.3e) and line search made no progress.', ...
+            exitflag, scaledRes);
+    end
 
-    % Re-evaluate node displacements after relaxation recovery
     [uESol, uLSol, ~] = unpack_two_solid_y( ...
         ySol, old, freeE, fixE, valsE, freeL, fixL, valsL, JuE, JuL, Jp, par);
 end
@@ -239,9 +296,12 @@ stateNew = build_two_solid_state_from_y( ...
     ySol, old, meshE, interfaceE, meshL, interfaceL, z, par, ...
     freeE, fixE, valsE, freeL, fixL, valsL, JuE, JuL, Jp);
 
-% 4. Kinematic Boundary Velocity Cap Guard (<= 10 mm/s)
+% 4. Kinematic Boundary Velocity Cap Guard
 if isfield(par, 'dt') && par.dt > 0
-    v_max_cap = 1.0e-2; % 10 mm/s velocity ceiling
+    v_max_cap = 0.020; % Default 20 mm/s ceiling
+    if isfield(par, 'v_max_cap') && isfinite(par.v_max_cap) && par.v_max_cap > 0
+        v_max_cap = par.v_max_cap;
+    end
 
     v_E_raw = (stateNew.deltaE - old.deltaE) / par.dt;
     if max(abs(v_E_raw)) > v_max_cap
@@ -261,8 +321,6 @@ if isfield(par, 'dt') && par.dt > 0
         end
     end
 end
-% =========================================================================
-% =========================================================================
 end
 
 function check_two_solid_jacobian_columns(fun, y0, nE, nL, N, par)
@@ -343,13 +401,19 @@ if gapMin <= par.minGap
     return;
 end
 
-[RE, RL, RF] = monolithic_two_solids_residual_unscaled( ...
-    uE, uL, p, old, meshE, interfaceE, baseE, ...
-    meshL, interfaceL, baseL, parL, z, par, freeE, freeL);
+try
+    [RE, RL, RF] = monolithic_two_solids_residual_unscaled( ...
+        uE, uL, p, old, meshE, interfaceE, baseE, ...
+        meshL, interfaceL, baseL, parL, z, par, freeE, freeL);
 
-solidENorm = norm(RE, inf);
-solidLNorm = norm(RL, inf);
-fluidNorm  = norm(RF, inf);
+    solidENorm = norm(RE, inf);
+    solidLNorm = norm(RL, inf);
+    fluidNorm  = norm(RF, inf);
+catch
+    solidENorm = inf;
+    solidLNorm = inf;
+    fluidNorm  = inf;
+end
 end
 
 function stateNew = build_two_solid_state_from_y( ...

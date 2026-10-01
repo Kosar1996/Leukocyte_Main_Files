@@ -1,17 +1,18 @@
+% =========================================================================
 % REVISION HISTORY & PERFORMANCE OPTIMIZATIONS:
-% -------------------------------------------------------------------------
 % 1. Removed Slow fsolve Fallback:
 %    Replaced slow MATLAB fsolve dogleg loop with a fast Levenberg-Marquardt
 %    diagonal-shift regularized linear solve (- (K + lambda*I) \ R).
-%
 % 2. Micro-Force Equilibrium Acceptance:
 %    Accepts Newton steps immediately when max nodal force imbalance drops
 %    below 1e-9 N (1 nN), preventing endless line-search backtracks.
-%
 % 3. Tight Loop Capping:
 %    Reduced line-search stall iterations from 20 down to 5 to ensure time
 %    steps execute in seconds rather than hanging for hours.
-% -------------------------------------------------------------------------
+% 4. NON-CONVERGENCE STEP DAMPING & VELOCITY GUARD:
+%    Damps displacement step by 90% (uNew = uOld + 0.10*(bestU - uOld)) when
+%    Newton loop fails to converge, preventing pressure runaway feedback loops.
+% =========================================================================
 
 function uNew = solve_finite_def_solid(mesh, uOld, traction, interfaceNodes, baseNodes, supportType, par, uInitialOrMesh)
 if nargin < 7
@@ -125,7 +126,7 @@ for it = 1:maxIters
                 contains(ME.message, 'Non-positive radius') || ...
                 contains(ME.message, 'Element inverted')
             if it > 1
-                uNew = bestU; return; % Return best valid state on inversion
+                uNew = bestU; break; % Break to safeguard section on inversion
             else
                 rethrow(ME);
             end
@@ -166,7 +167,7 @@ for it = 1:maxIters
     du_free = dscale .\ du_scaled;
 
     if ~all(isfinite(du_free))
-        uNew = bestU; return;
+        uNew = bestU; break;
     end
 
     duMax = max(abs(du_free));
@@ -208,8 +209,7 @@ for it = 1:maxIters
         trustU = 0.5 * trustU;
         stallFloorCount = stallFloorCount + 1;
         if trustU < trustUMin || stallFloorCount >= stallMaxIters
-            % Accept best state if absolute residual is small enough, else return best
-            uNew = bestU; return;
+            break;
         end
     else
         stallFloorCount = 0;
@@ -223,22 +223,34 @@ end
 converged = (bestRel < par.newtonTolSolid) || (bestAbs < absTol) || (bestAbs < fallbackAbsTol);
 
 if ~converged
-    fprintf('\n   [SOLID GUARD TRIGGERED] Newton loop failed to converge (bestAbs = %.3e N, bestRel = %.3e).\n', ...
+    fprintf('    [Solid Newton Stall] Failed to reach tol (AbsRes = %.3e N, RelRes = %.3e).\n', ...
         bestAbs, bestRel);
-    fprintf('   -> Damping displacement step by 90%% to prevent pressure runaway feedback loop.\n');
-
-    % 1. Heavy Damping: Reject 90% of the un-converged step to prevent erratic mesh jumps
+    fprintf('    -> Damping displacement step by 90%% (uNew = uOld + 0.10*du) for numerical stability.\n');
     uNew = uOld + 0.10 * (bestU - uOld);
 else
+    fprintf('    [Solid Newton OK] Converged in %d iters (AbsRes = %.3e N, RelRes = %.3e).\n', ...
+        it, bestAbs, bestRel);
     uNew = bestU;
 end
 
-% 2. Hard Velocity Clamp Guard (Prevents uNew - uOld from driving v_wall > 2.5 mm/s)
+if ~converged
+    fprintf('    [Solid Newton Stall] Failed to reach tol (AbsRes = %.3e N, RelRes = %.3e).\n', ...
+        bestAbs, bestRel);
+    fprintf('    -> Damping displacement step by 90%% (uNew = uOld + 0.10*du) for numerical stability.\n');
+    uNew = uOld + 0.10 * (bestU - uOld);
+    % 1. Heavy Damping: Reject 90% of the un-converged step to prevent erratic mesh jumps
+    uNew = uOld + 0.10 * (bestU - uOld);
+else
+    fprintf('    [Solid Newton OK] Converged in %d iters (AbsRes = %.3e N, RelRes = %.3e).\n', ...
+        it, bestAbs, bestRel);
+    uNew = bestU;
+end
+
+% 2. Hard Velocity Clamp Guard (Prevents uNew - uOld from driving v_wall > v_max_cap)
 if isfield(par, 'dt') && par.dt > 0
     du_raw = uNew - uOld;
     v_raw = du_raw / par.dt;
-    % In solve_finite_def_solid_2.m (around line 229)
-    v_max_cap = 2.0e-2; % Default 20 mm/s to accommodate 12.6 mm/s wall velocity
+    v_max_cap = 2.0e-2; % Default 20 mm/s to accommodate moving-wall transients
     if isfield(par, 'v_max_cap') && isfinite(par.v_max_cap) && par.v_max_cap > 0
         v_max_cap = par.v_max_cap;
     end

@@ -27,6 +27,9 @@ which('-all', 'solve_finite_def_solid');
 which('-all', 'apply_bodyfitted_MAC_traction_correction');
 fprintf('===========================================\n\n');
 
+
+
+
 %% 1. Paths
 softlubeDir = '';
 % FIX 1: Resolve softlubeDir dynamically relative to mfilename if empty
@@ -36,6 +39,12 @@ end
 if ~isempty(softlubeDir)
     addpath(softlubeDir);
 end
+
+% INPUT 1: Path to the MAT file containing historical step data
+matFilePath = fullfile(softlubeDir, 'case_7_t_step14.mat');
+
+% INPUT 2: Exact timestep index to roll back to and resume from
+targetStep = 13;
 
 %% 2. CUSTOMIZABLE PARAMETERS
 dt = 2.5e-6;
@@ -211,16 +220,22 @@ cfg.output.store2DSpeedHist = true;
 cfg.runtime.useEnvironment = false;
 cfg.ui.closeFigures = closeFiguresAtStart;
 cfg.parOverrides = struct();
-cfg.numerics.v_max_cap = 1.0e-2;  % Cap boundary wall velocity at 10 mm/s
-cfg.parOverrides.v_max_cap = 1.0e-2;
+% ========================= NEW CODE ===========================
+% STRATEGY A MASTER SAFEGUARDS & NUMERICAL TOLERANCES
+cfg.numerics.maxFluidPressureCap = 3000.0; % [Pa] Upper bound on fluid pressure
+cfg.numerics.maxFluidShearCap    = 500.0;  % [Pa] Upper bound on wall shear stress
+cfg.numerics.v_max_cap           = 0.020;   % [m/s] Kinematic velocity clamp (20 mm/s)
+cfg.numerics.solidAbsTol         = 1.0e-12; % [N] Absolute force tolerance
+cfg.numerics.solidFallbackAbsTol = 5.0e-9;  % [N] Micro-element floor (5 nN)
+cfg.numerics.newtonTolSolid      = 1.0e-3;  % Relative Newton force tolerance
+cfg.numerics.eta_solid           = 10.0;    % [Pa*s] Viscoelastic rate dissipation
 
-% =========================================================================
-% STRATEGY A CONFIGURATION (Bounded Aitken + Damped Warm-Start Predictor)
-% =========================================================================
-cfg.numerics.omega_min  = 0.15;   % Elevated floor: prevents iteration lock-in at 0.08
-cfg.numerics.omega_max  = 0.65;   % Elevated ceiling for faster lubrication convergence
-cfg.numerics.omega_init = 0.20;   % Smooth starting relaxation factor (was 0.08)
-cfg.numerics.alpha_pred = 0.10;   % Reduced predictor acceleration to curb t=10us pressure spikes
+% STRATEGY A OUTER COUPLING & PREDICTOR CONTROLS
+cfg.numerics.omega_min  = 0.08;   % Lower floor prevents lock-in
+cfg.numerics.omega_max  = 0.50;   % Upper stability clamp
+cfg.numerics.omega_init = 0.08;   % Initial Aitken factor
+cfg.numerics.alpha_pred = 0.30;   % Damped warm-start predictor factor
+% ==============================================================
 
 % Sync Strategy A parameters directly into parOverrides
 cfg.parOverrides.omega_min  = cfg.numerics.omega_min;
@@ -296,35 +311,70 @@ cfg.parOverrides.limitSolidStep = true;
 cfg.parOverrides.maxSolidStepPerStep = 1.0e-8; % 10 nm cap
 cfg.parOverrides.solidStepRelax = 0.2;
 
-%% 9. Runtime
+% Synchronize directly into parOverrides for restart mode
+cfg.parOverrides.checkpointFile = outputFile;
+cfg.parOverrides.checkpointEvery = 1;
+cfg.parOverrides.saveOutput = saveOutput;
+cfg.parOverrides.outputFile = outputFile;
+% =========================================
+
+% ========================= NEW CODE ===========================
+% Synchronize ALL Strategy A Parameters into cfg.parOverrides
+cfg.parOverrides.maxFluidPressureCap = cfg.numerics.maxFluidPressureCap;
+cfg.parOverrides.maxFluidShearCap    = cfg.numerics.maxFluidShearCap;
+cfg.parOverrides.v_max_cap           = cfg.numerics.v_max_cap;
+cfg.parOverrides.solidAbsTol         = cfg.numerics.solidAbsTol;
+cfg.parOverrides.solidFallbackAbsTol = cfg.numerics.solidFallbackAbsTol;
+cfg.parOverrides.newtonTolSolid      = cfg.numerics.newtonTolSolid;
+cfg.parOverrides.eta_solid           = cfg.numerics.eta_solid;
+
+% ==============================================================
+
+%% 9. Runtime Execution & Rollback Launch
 if plotNative2DPressure || plotNative2DVelocity || ...
         plotFirstStepHybridMesh || plotGlobalDomainSchematic
     set(0, 'DefaultFigureVisible', 'on');
 end
 
-fprintf('\nRunning 06_run_file_fixed: item-1-pushed codebase, item 1 meshfiles\n');
+
+
+fprintf('\nRunning 06_run_file_fixed: Strategy A Safeguarded Codebase\n');
 fprintf('   dt                  = %.6e s\n', dt);
 fprintf('   tEnd                = %.6e s\n', tEnd);
 fprintf('   requested steps     = %.0f\n', nSteps);
 
-% Print parameter verification check before launch
+% Print Strategy A verification check
 fprintf('\n=== RUNTIME STRATEGY A CONFIGURATION CHECK ===\n');
 fprintf('   omega_min  = %.2f (elevated floor)\n', cfg.numerics.omega_min);
-cfg.numerics.omega_max  = 0.65;
 fprintf('   omega_max  = %.2f (upper clamp)\n', cfg.numerics.omega_max);
 fprintf('   alpha_pred = %.2f (damped predictor)\n', cfg.numerics.alpha_pred);
 fprintf('   v_max_cap  = %.1e m/s (kinematic ceiling)\n', cfg.numerics.v_max_cap);
 fprintf('===============================================\n\n');
 
-% FIX 3: Check if out already exists in workspace before launching
-if exist('out', 'var')
-    out = softlube_run_case_global_coupled(cfg, out);
+% Add right before calling softlube_run_case_global_coupled:
+fprintf('\n=========================================================\n');
+fprintf('  RESTART EXECUTION DIAGNOSTICS\n');
+fprintf('  - Target Restart Step : %d\n', targetStep);
+fprintf('  - Input File Path     : %s\n', matFilePath);
+fprintf('  - Traction Caps       : Pressure <= %.1f Pa | Shear <= %.1f Pa\n', ...
+    cfg.numerics.maxFluidPressureCap, cfg.numerics.maxFluidShearCap);
+fprintf('  - Pressure Cap        : maxP <= %.1f Pa\n', cfg.numerics.maxFluidPressureCap);
+fprintf('  - Kinematic Clamp     : Velocity <= %.1f mm/s\n', cfg.numerics.v_max_cap * 1e3);
+fprintf('  - Solid Viscosity     : eta_solid = %.1f Pa*s\n', cfg.numerics.eta_solid);
+fprintf('=========================================================\n\n');
+
+% Execute solver using: softlube_run_case_global_coupled(matFilePath, targetStep)
+if exist(matFilePath, 'file')
+    fprintf('[RESTART] Executing softlube_run_case_global_coupled(''%s'', %d)...\n', ...
+        matFilePath, targetStep);
+    out = softlube_run_case_global_coupled(matFilePath, targetStep);
 else
+    fprintf('[FRESH START] File not found. Launching from t = 0 s using cfg...\n');
     out = softlube_run_case_global_coupled(cfg);
 end
 
 out.cfg = cfg;
-save(outputFile, 'out');
+save(outputFile, 'out', '-v7.3');
 
 try
     out.native2D = collect_final_native2d(out);

@@ -253,159 +253,516 @@ if nargin == 1
     timeTol = 100 * eps(max(par.tEnd, 1));
 
 elseif nargin == 2
-    state = varargin{1}.state;
-    par   = varargin{1}.par;
+    % =========================================================================
+    % ARGUMENT 1: MAT FILE PATH OR LOADED STRUCT
+    % ARGUMENT 2: TARGET TIMESTEP INDEX FOR ROLLBACK (e.g., 13)
+    % =========================================================================
+    fileOrData = cfg;
+    targetStep = varargin{1};
 
-    nStepsEnv = str2double(getenv('SOFTLUBE_NSTEPS'));
+    % Load MAT file if a file path string was passed
+    if ischar(fileOrData) || isstring(fileOrData)
+        fprintf('\n[CHECKPOINT LOAD] Reading file: %s\n', fileOrData);
+        S_check = load(fileOrData);
+        if isfield(S_check, 'out')
+            checkpointOut = S_check.out;
+        else
+            checkpointOut = S_check;
+        end
+    elseif isstruct(fileOrData)
+        if isfield(fileOrData, 'out')
+            checkpointOut = fileOrData.out;
+        else
+            checkpointOut = fileOrData;
+        end
+    else
+        error('First input argument must be a MAT file path string or a loaded results struct.');
+    end
+
+    % Cap target step to maximum available historical step in file
+    maxAvailableStep = checkpointOut.stopStep;
+    if isfield(checkpointOut, 'tHist') && ~isempty(checkpointOut.tHist)
+        maxAvailableStep = nnz(isfinite(checkpointOut.tHist));
+    end
+
+    targetStep = min(round(targetStep), maxAvailableStep);
+
+    fprintf('=== [CHECKPOINT RESUME] Extracting Step %d state (t = %.6e s) ===\n', ...
+        targetStep, checkpointOut.t(targetStep));
+
+    % Extract configuration and mesh structures from checkpoint
+    par = checkpointOut.par;
+
+    % =========================================================================
+    % FORCE CHECKPOINT PARAMETERS ON RESTART (FIX 1)
+    % =========================================================================
+    if isstruct(cfg) && isfield(cfg, 'output') && isfield(cfg.output, 'checkpointFile') && ~isempty(cfg.output.checkpointFile)
+        par.checkpointFile = cfg.output.checkpointFile;
+        if isfield(cfg.output, 'checkpointEvery') && cfg.output.checkpointEvery > 0
+            par.checkpointEvery = cfg.output.checkpointEvery;
+        else
+            par.checkpointEvery = 1;
+        end
+    elseif isfield(checkpointOut, 'cfg') && isfield(checkpointOut.cfg, 'output') && isfield(checkpointOut.cfg.output, 'checkpointFile')
+        par.checkpointFile = checkpointOut.cfg.output.checkpointFile;
+        par.checkpointEvery = 1;
+    else
+        % Default fallback if unassigned
+        par.checkpointFile = fullfile(pwd, 'case_7_t.mat');
+        par.checkpointEvery = 1;
+    end
+
+    % =========================================================================
+    % [1001 FIX] RE-BASE STORED FILE REFERENCES ON THE CURRENT RUN
+    % =========================================================================
+    % par in the checkpoint carries absolute paths of the run that wrote it
+    % (e.g. another user's or an older code folder). Write this run's final
+    % output next to its checkpoint, and read the mesh/prestress files from the
+    % current code folder whenever the stored path is not readable (otherwise
+    % baseL stays empty and step 1 of the restart fails).
+    [~, cpName1001, cpExt1001] = fileparts(par.checkpointFile);
+    if isempty(cpName1001), cpName1001 = 'case_7_t'; cpExt1001 = '.mat'; end
+    par.checkpointFile = fullfile(pwd, [cpName1001 cpExt1001]);   % always the current run folder
+    par.outputFile = par.checkpointFile;
+    codeDir1001 = fileparts(mfilename('fullpath'));
+    pf1001 = {'leukocytePrestressFile', 'endotheliumPrestressFile'};
+    for k1001 = 1:numel(pf1001)
+        if isfield(par, pf1001{k1001}) && ~isempty(par.(pf1001{k1001})) && ...
+                ~exist(par.(pf1001{k1001}), 'file')
+            [~, nm1001, ex1001] = fileparts(par.(pf1001{k1001}));
+            par.(pf1001{k1001}) = fullfile(codeDir1001, [nm1001 ex1001]);
+        end
+    end
+    % [1001 FIX] Carry the t = 0 reference state through restarts (was dropped)
+    if isfield(checkpointOut, 't0State'), t0State = checkpointOut.t0State; end
+    if isfield(checkpointOut, 't0Fluid'), t0Fluid = checkpointOut.t0Fluid; end
+
+    % =========================================================================
+    % 1. EXTRACT Z-GRID & SET MESH PARAMS FIRST
+    % =========================================================================
+    z = checkpointOut.z(:);
+    par.NzFluid = numel(z);
+    par.zGrid = z;
+    par.dz = mean(diff(z));
+
+    % Ensure useExactDeformedInterface is evaluated in restart mode
     useExactDeformedInterface = isfield(par, 'useExactDeformedInterface') && ...
         par.useExactDeformedInterface;
 
+    % Enforce Strategy A Master Safeguards directly onto par
+    % [1001 FIX] A finished run's .mat also contains out.cfg (added by the run
+    % file). Its parOverrides are the run file's settings, not necessarily the
+    % values the run used (out.par), and its checkpoint/output paths point to
+    % the old run folder. Only fill in fields missing from par; never override
+    % the values the run actually used, and never take file locations from it.
+    % (Restart from a finished file then behaves like restart from a checkpoint.)
+    if isfield(checkpointOut, 'cfg') && isfield(checkpointOut.cfg, 'parOverrides')
+        fnames = fieldnames(checkpointOut.cfg.parOverrides);
+        skip1001 = {'checkpointFile', 'outputFile', 'saveOutput', 'checkpointEvery'};
+        for k = 1:numel(fnames)
+            if ~ismember(fnames{k}, skip1001) && ~isfield(par, fnames{k})
+                par.(fnames{k}) = checkpointOut.cfg.parOverrides.(fnames{k});
+            end
+        end
+    end
+
+    if ~isfield(par, 'eta_solid') || isempty(par.eta_solid)
+        par.eta_solid = 10.0; % [Pa*s] Transient solid viscosity default
+    end
+
+    % =========================================================================
+    % AUDIT PAR OVERRIDES TO IDENTIFY RESIDUAL SHIFT
+    % =========================================================================
+    fprintf('\n=== [PAR OVERRIDES AUDIT] ===\n');
+    fprintf('  - par.dt          : %.6e s\n', par.dt);
+    fprintf('  - par.uScaleMono  : %.6e\n', par.uScaleMono);
+    fprintf('  - par.pScaleMono  : %.6e\n', par.pScaleMono);
+    if isfield(par, 'eta_solid'), fprintf('  - par.eta_solid   : %.6e Pa*s\n', par.eta_solid); end
+    if isfield(par, 'EL'),        fprintf('  - par.EL          : %.6e Pa\n', par.EL); end
+    if isfield(par, 'nuL'),       fprintf('  - par.nuL         : %.6e\n', par.nuL); end
+    fprintf('=============================\n\n');
+
+    % =========================================================================
+    % 2. EXTRACT STEP 13 STATE (t_n) & RESTORE CONVERGED FLUID FIELDS
+    % =========================================================================
+    if isfield(checkpointOut, 'stateHist') && numel(checkpointOut.stateHist) >= targetStep ...
+            && ~isempty(checkpointOut.stateHist{targetStep})
+        state = checkpointOut.stateHist{targetStep};
+        stBaseTarget = checkpointOut.stateHist{targetStep};
+    else
+        state = checkpointOut.state;
+        stBaseTarget = checkpointOut.state;
+    end
+
+    % DIRECT ASSIGNMENT: Force exact baseline uEPrev and uLPrev from checkpoint
+    if isfield(stBaseTarget, 'uEPrev') && ~isempty(stBaseTarget.uEPrev)
+        state.uEPrev = stBaseTarget.uEPrev;
+    end
+    if isfield(stBaseTarget, 'uLPrev') && ~isempty(stBaseTarget.uLPrev)
+        state.uLPrev = stBaseTarget.uLPrev;
+    end
+    % =========================================================================
+    % RESTORE 2D UNSTEADY STOKES FLUID FIELDS & TRACTIONS FROM FLUIDHIST
+    % =========================================================================
+    if isfield(checkpointOut, 'fluidHist') && numel(checkpointOut.fluidHist) >= targetStep ...
+            && ~isempty(checkpointOut.fluidHist{targetStep})
+
+        fl13 = checkpointOut.fluidHist{targetStep};
+
+        % 1. 1D & 2D Tractions/Pressures (Directly synced to state)
+        if isfield(fl13, 'p') && ~isempty(fl13.p)
+            state.p = fl13.p(:);
+            state.p2D = fl13.p(:);
+        end
+        if isfield(fl13, 'P') && ~isempty(fl13.P)
+            state.P2DField = fl13.P;
+        end
+        if isfield(fl13, 'tauE') && ~isempty(fl13.tauE)
+            state.tauE = fl13.tauE(:);
+        end
+        if isfield(fl13, 'tauL') && ~isempty(fl13.tauL)
+            state.tauL = fl13.tauL(:);
+        end
+
+        % 2. 2D Face Velocities for Unsteady Momentum Term (du/dt)
+        if isfield(fl13, 'ur') && ~isempty(fl13.ur)
+            state.ur2DFaceField = fl13.ur;
+        elseif isfield(fl13, 'ur2D') && ~isempty(fl13.ur2D)
+            state.ur2DFaceField = fl13.ur2D;
+        end
+
+        if isfield(fl13, 'uz') && ~isempty(fl13.uz)
+            state.uz2DFaceField = fl13.uz;
+        elseif isfield(fl13, 'uz2D') && ~isempty(fl13.uz2D)
+            state.uz2DFaceField = fl13.uz2D;
+        end
+    end
+
+    % Extract or Reconstruct Step 13 (v^n) Velocities
+    if isfield(state, 'v_wall_E') && ~isempty(state.v_wall_E)
+        state.v_wall_E = state.v_wall_E;
+    elseif isfield(checkpointOut, 'fluidHist') && numel(checkpointOut.fluidHist) >= targetStep ...
+            && isfield(checkpointOut.fluidHist{targetStep}, 'v_wall_E')
+        state.v_wall_E = checkpointOut.fluidHist{targetStep}.v_wall_E;
+    elseif targetStep > 1 && isfield(checkpointOut, 'stateHist') && ~isempty(checkpointOut.stateHist{targetStep-1})
+        [~, ~, state.v_wall_E] = exact_interface_radius_velocity( ...
+            meshE, state.uE, checkpointOut.stateHist{targetStep-1}.uE, interfaceE, z, par.dt, par);
+    end
+
+    if isfield(state, 'v_wall_L') && ~isempty(state.v_wall_L)
+        state.v_wall_L = state.v_wall_L;
+    elseif isfield(checkpointOut, 'fluidHist') && numel(checkpointOut.fluidHist) >= targetStep ...
+            && isfield(checkpointOut.fluidHist{targetStep}, 'v_wall_L')
+        state.v_wall_L = checkpointOut.fluidHist{targetStep}.v_wall_L;
+    end
+
+    % =========================================================================
+    % 3. EXTRACT STEP 12 STATE (t_{n-1}) & RECONSTRUCT PREDICTOR BUFFERS (v^{n-1})
+    % =========================================================================
+    v_wall_E_nm1 = zeros(size(z));
+    v_wall_L_nm1 = zeros(size(z));
+
+    if targetStep > 1 && isfield(checkpointOut, 'stateHist') && ...
+            numel(checkpointOut.stateHist) >= (targetStep - 1) && ...
+            ~isempty(checkpointOut.stateHist{targetStep - 1})
+
+        stateNm1 = checkpointOut.stateHist{targetStep - 1};
+
+        % Viscoelastic displacement history for Step 14 (u^{13} - u^{12}) / dt
+        % --- FIXED (EXACT BASELINE RECONSTRUCTION) ---
+        % Reconstruct true uEPrev (Step 11 displacement) matching baseline stateHist{13}
+        % --- GUARDED DISPLACEMENT HISTORY ---
+        % Only fall back to stateNm2/stateNm1 if state.uEPrev or state.uLPrev was NOT
+        % directly assigned from stBaseTarget (checkpointOut.stateHist{targetStep})
+        if ~isfield(state, 'uEPrev') || isempty(state.uEPrev)
+            if targetStep > 2 && isfield(checkpointOut, 'stateHist') && ...
+                    numel(checkpointOut.stateHist) >= (targetStep - 2) && ...
+                    ~isempty(checkpointOut.stateHist{targetStep - 2})
+                stateNm2 = checkpointOut.stateHist{targetStep - 2};
+                if isfield(stateNm2, 'uE') && ~isempty(stateNm2.uE), state.uEPrev = stateNm2.uE; end
+            else
+                if isfield(stateNm1, 'uE') && ~isempty(stateNm1.uE), state.uEPrev = stateNm1.uE; end
+            end
+        end
+
+        if ~isfield(state, 'uLPrev') || isempty(state.uLPrev)
+            if targetStep > 2 && isfield(checkpointOut, 'stateHist') && ...
+                    numel(checkpointOut.stateHist) >= (targetStep - 2) && ...
+                    ~isempty(checkpointOut.stateHist{targetStep - 2})
+                stateNm2 = checkpointOut.stateHist{targetStep - 2};
+                if isfield(stateNm2, 'uL') && ~isempty(stateNm2.uL), state.uLPrev = stateNm2.uL; end
+            else
+                if isfield(stateNm1, 'uL') && ~isempty(stateNm1.uL), state.uLPrev = stateNm1.uL; end
+            end
+        end
+        if isfield(stateNm1, 'p')  && ~isempty(stateNm1.p),  state.pPrev  = stateNm1.p;  end
+
+        % Step 12 (v^{n-1}) Endothelium Velocity Reconstruction
+        if isfield(stateNm1, 'v_wall_E') && ~isempty(stateNm1.v_wall_E)
+            v_wall_E_nm1 = stateNm1.v_wall_E;
+        elseif isfield(checkpointOut, 'fluidHist') && numel(checkpointOut.fluidHist) >= (targetStep - 1) ...
+                && isfield(checkpointOut.fluidHist{targetStep - 1}, 'v_wall_E')
+            v_wall_E_nm1 = checkpointOut.fluidHist{targetStep - 1}.v_wall_E;
+        elseif targetStep > 2 && isfield(checkpointOut.stateHist{targetStep-2}, 'uE')
+            [~, ~, v_wall_E_nm1] = exact_interface_radius_velocity( ...
+                meshE, stateNm1.uE, checkpointOut.stateHist{targetStep-2}.uE, interfaceE, z, par.dt, par);
+        end
+
+        % Step 12 (v^{n-1}) Leukocyte Velocity Reconstruction
+        if isfield(stateNm1, 'v_wall_L') && ~isempty(stateNm1.v_wall_L)
+            v_wall_L_nm1 = stateNm1.v_wall_L;
+        elseif isfield(checkpointOut, 'fluidHist') && numel(checkpointOut.fluidHist) >= (targetStep - 1) ...
+                && isfield(checkpointOut.fluidHist{targetStep - 1}, 'v_wall_L')
+            v_wall_L_nm1 = checkpointOut.fluidHist{targetStep - 1}.v_wall_L;
+        elseif targetStep > 2 && isfield(checkpointOut.stateHist{targetStep-2}, 'uL')
+            if ~(isfield(par, 'noLeukocyte') && par.noLeukocyte) && ...
+                    ~(isfield(par, 'useFixedCylindricalLeukocyte') && par.useFixedCylindricalLeukocyte) && ...
+                    ~use_RLout_fluid_interface_for_solid_leukocyte(par)
+                [~, ~, v_wall_L_nm1] = exact_interface_radius_velocity( ...
+                    meshL, stateNm1.uL, checkpointOut.stateHist{targetStep-2}.uL, interfaceL, z, par.dt, par);
+                zL_nodes = meshL.nodes(:,2) + stateNm1.uL(2:2:end);
+                outOfLeukocyte = (z < min(zL_nodes)) | (z > max(zL_nodes));
+                v_wall_L_nm1(outOfLeukocyte) = 0;
+            end
+        end
+    end
+
+    % Enable predictor extrapolation in solve_monolithic_two_solids_fsolve_timestep
+    par.useMonoPredictor = true;
+    state.dtPrev = par.dt;
+
+    % =========================================================================
+    % IN-LINE BASELINE VS RESTART PARITY CHECK
+    % =========================================================================
+    if targetStep <= numel(checkpointOut.stateHist) && ~isempty(checkpointOut.stateHist{targetStep})
+        stBase = checkpointOut.stateHist{targetStep};
+        fprintf('\n=== [BASELINE VS RESTART PARITY AUDIT] ===\n');
+        if isfield(stBase, 'uE') && isfield(state, 'uE')
+            fprintf('  1. ||uE_base - uE_restart|| : %.6e m\n', norm(stBase.uE - state.uE));
+        end
+        if isfield(stBase, 'uL') && isfield(state, 'uL')
+            fprintf('  2. ||uL_base - uL_restart|| : %.6e m\n', norm(stBase.uL - state.uL));
+        end
+        if isfield(stBase, 'uEPrev') && isfield(state, 'uEPrev')
+            fprintf('  3. ||uEPrev_base - uEPrev_restart|| : %.6e m\n', norm(stBase.uEPrev - state.uEPrev));
+        end
+        if isfield(stBase, 'uLPrev') && isfield(state, 'uLPrev')
+            fprintf('  4. ||uLPrev_base - uLPrev_restart|| : %.6e m\n', norm(stBase.uLPrev - state.uLPrev));
+        end
+        if isfield(stBase, 'p') && isfield(state, 'p')
+            fprintf('  5. ||p_base - p_restart||     : %.6e Pa\n', norm(stBase.p - state.p));
+        end
+        fprintf('===========================================\n\n');
+    end
+
+    nStepsEnv = str2double(getenv('SOFTLUBE_NSTEPS'));
     if isfinite(nStepsEnv) && nStepsEnv > 0
         nSteps = max(1, round(nStepsEnv));
         par.tEnd = nSteps * par.dt;
     else
         nSteps = round(par.tEnd/par.dt);
     end
-    par.tEnd = nSteps * par.dt;
     historyCapacity = max(nSteps, 1);
 
-    % Extract prior history if continuing from checkpoint
-    if isfield(varargin{1}, 't') && ~isempty(varargin{1}.t)
-        tHist = varargin{1}.t(:);
-        tHist(end+1:historyCapacity) = nan;
-    else
-        tHist = nan(historyCapacity,1);
-    end
-
-    if isfield(varargin{1}, 'dtHist') && ~isempty(varargin{1}.dtHist)
-        dtHist = varargin{1}.dtHist(:);
-        dtHist(end+1:historyCapacity) = nan;
-    else
-        dtHist = nan(historyCapacity,1);
-    end
-
-    stepWallTimeHist = nan(historyCapacity,1);
-    retryHist        = zeros(historyCapacity,1);
-
-    tn = 0;
-    tNow = 0;
-    if isfield(state, 't') && isfinite(state.t)
-        tNow = state.t;
-    end
+    % Reset time-stepping counters to roll back to Step 13 baseline
+    tn = targetStep;
+    tNow = state.t;
     dtNext = par.dt;
     timeTol = 100 * eps(max(par.tEnd, 1));
     stoppedEarly = false;
     stopStep = 0;
     stopReason = '';
 
-    meshE      = varargin{1}.meshE;
-    interfaceE = varargin{1}.interfaceE;
+    % Truncate history arrays cleanly up through targetStep
+    tHist = checkpointOut.t(1:targetStep);
+    tHist(targetStep+1:historyCapacity) = nan;
 
-    if isfield(varargin{1}, 'baseE')
-        baseE = varargin{1}.baseE;
-    elseif isstruct(cfg) && isfield(cfg, 'geometry') && isfield(cfg.geometry, 'endotheliumPrestressFile')
-        S = load(cfg.geometry.endotheliumPrestressFile);
-        baseE = S.baseE;
-    elseif isstruct(meshE) && isfield(meshE, 'baseE')
+    dtHist = checkpointOut.dtHist(1:targetStep);
+    dtHist(targetStep+1:historyCapacity) = nan;
+
+    stepWallTimeHist = nan(historyCapacity,1);
+    stepWallTimeHist(1:targetStep) = checkpointOut.stepWallTimeHist(1:targetStep);
+
+    retryHist = zeros(historyCapacity,1);
+    retryHist(1:targetStep) = checkpointOut.retryHist(1:targetStep);
+
+    % =========================================================================
+    % ROBUST BASE-E BOUNDARY NODE RESOLUTION
+    % =========================================================================
+    meshE = checkpointOut.meshE;
+    interfaceE = checkpointOut.interfaceE;
+
+    if isfield(checkpointOut, 'baseE') && ~isempty(checkpointOut.baseE)
+        baseE = checkpointOut.baseE;
+    elseif isfield(meshE, 'baseE') && ~isempty(meshE.baseE)
         baseE = meshE.baseE;
     else
-        error('softlube_run_case_global_coupled: baseE boundary nodes could not be resolved for endothelium.');
+        % Fallback: Load directly from endothelium prestress geometry file
+        endoFile = '';
+        if isfield(par, 'endotheliumPrestressFile') && exist(par.endotheliumPrestressFile, 'file')
+            endoFile = par.endotheliumPrestressFile;
+        elseif isstruct(cfg) && isfield(cfg, 'geometry') && isfield(cfg.geometry, 'endotheliumPrestressFile') && exist(cfg.geometry.endotheliumPrestressFile, 'file')
+            endoFile = cfg.geometry.endotheliumPrestressFile;
+        else
+            endoFile = fullfile(fileparts(mfilename('fullpath')), 'solid_endothelium_P300.mat');
+        end
+
+        if exist(endoFile, 'file')
+            fprintf('   [Resume Helper] Loading missing baseE boundary from %s\n', endoFile);
+            SE = load(endoFile);
+            baseE = SE.baseE;
+        else
+            error('softlube_run_case_global_coupled: baseE boundary nodes could not be resolved from checkpoint or %s', endoFile);
+        end
     end
+
+    % 0-based to 1-based Index Safeguard
+    if any(baseE(:) == 0)
+        baseE = baseE + 1;
+        fprintf('   [Index Correction] Shifted baseE from 0-based to 1-based indexing.\n');
+    end
+    if exist('interfaceE', 'var') && ~isempty(interfaceE) && any(interfaceE(:) == 0)
+        interfaceE = interfaceE + 1;
+        fprintf('   [Index Correction] Shifted interfaceE from 0-based to 1-based indexing.\n');
+    end
+    meshE.baseE = baseE;
 
     hasLeukocyte = ~(isfield(par, 'noLeukocyte') && par.noLeukocyte) && ...
         ~(isfield(par, 'useFixedCylindricalLeukocyte') && par.useFixedCylindricalLeukocyte);
 
-    meshL = [];
-    interfaceL = [];
-    baseL = [];
-    parL = [];
-
+    meshL = []; interfaceL = []; baseL = []; parL = [];
     if hasLeukocyte
-        if isfield(varargin{1}, 'meshL')
-            meshL = varargin{1}.meshL;
+        if isfield(checkpointOut, 'meshL'), meshL = checkpointOut.meshL; end
+        if isfield(checkpointOut, 'interfaceL'), interfaceL = checkpointOut.interfaceL; end
+        if isfield(checkpointOut, 'baseL'), baseL = checkpointOut.baseL; end
+
+        if isempty(baseL) && isfield(par, 'leukocytePrestressFile') && exist(par.leukocytePrestressFile, 'file')
+            SL_load = load(par.leukocytePrestressFile);
+            if isfield(SL_load, 'baseL'), baseL = SL_load.baseL; end
+            if isfield(SL_load, 'interfaceL') && isempty(interfaceL), interfaceL = SL_load.interfaceL; end
+            if isfield(SL_load, 'meshL') && isempty(meshL), meshL = SL_load.meshL; end
         end
-        if isfield(varargin{1}, 'interfaceL')
-            interfaceL = varargin{1}.interfaceL;
+
+        if ~isempty(baseL) && any(baseL(:) == 0)
+            baseL = baseL + 1;
+            fprintf('   [Index Correction] Shifted baseL from 0-based to 1-based indexing.\n');
         end
-        if isfield(par, 'leukocytePrestressFile') && exist(par.leukocytePrestressFile, 'file')
-            SL = load(par.leukocytePrestressFile);
-            baseL = SL.baseL;
-        elseif isfield(varargin{1}, 'baseL')
-            baseL = varargin{1}.baseL;
+        if ~isempty(interfaceL) && any(interfaceL(:) == 0)
+            interfaceL = interfaceL + 1;
+            fprintf('   [Index Correction] Shifted interfaceL from 0-based to 1-based indexing.\n');
         end
+        if ~isempty(baseL) && isstruct(meshL)
+            meshL.baseL = baseL;
+        end
+
         parL = leukocyte_solid_parameters(par);
     end
 
-    z = varargin{1}.z;
+    z = checkpointOut.z;
 
-    % Checkpoint Resumption Reference Volume Synchronization
-    if ~isfield(state, 'auditUpperVol')
-        z_vec0 = z(:);
-        rE0 = state.deltaE(:);
-        rL0 = state.deltaL(:);
-        gap0 = rE0 - rL0;
-        z_mid_target0 = 0.5 * (min(z_vec0) + max(z_vec0));
-        [~, mid_idx0] = min(abs(z_vec0 - z_mid_target0));
-        upper_indices0 = find((1:numel(z_vec0))' > mid_idx0);
-        if ~isempty(upper_indices0)
-            [~, min_upper_rel0] = min(gap0(upper_indices0));
-            dz_local0 = mean(diff(z_vec0));
-            rE_cv0 = rE0(mid_idx0:upper_indices0(min_upper_rel0));
-            rL_cv0 = rL0(mid_idx0:upper_indices0(min_upper_rel0));
-            state.auditUpperVol = pi * sum((rE_cv0.^2 - rL_cv0.^2)) * dz_local0;
-        end
-    end
+    % Truncate cell history arrays up to targetStep
+    stateHist = cell(historyCapacity,1);
+    stateHist(1:targetStep) = checkpointOut.stateHist(1:targetStep);
+
+    fluidHist = cell(historyCapacity,1);
+    fluidHist(1:targetStep) = checkpointOut.fluidHist(1:targetStep);
+
+    deltaEHist = zeros(numel(z), historyCapacity);
+    deltaEHist(:, 1:targetStep) = checkpointOut.deltaEHist(:, 1:targetStep);
+
+    deltaLHist = zeros(numel(z), historyCapacity);
+    deltaLHist(:, 1:targetStep) = checkpointOut.deltaLHist(:, 1:targetStep);
+
+    pHist = zeros(numel(z), historyCapacity);
+    pHist(:, 1:targetStep) = checkpointOut.pHist(:, 1:targetStep);
+
+    tauEHist = zeros(numel(z), historyCapacity);
+    tauEHist(:, 1:targetStep) = checkpointOut.tauEHist(:, 1:targetStep);
+
+    tauLHist = zeros(numel(z), historyCapacity);
+    tauLHist(:, 1:targetStep) = checkpointOut.tauLHist(:, 1:targetStep);
+
+    uzEHist = zeros(numel(z), historyCapacity);
+    uzEHist(:, 1:targetStep) = checkpointOut.uzEHist(:, 1:targetStep);
+
+    uzLHist = zeros(numel(z), historyCapacity);
+    uzLHist(:, 1:targetStep) = checkpointOut.uzLHist(:, 1:targetStep);
 
     NrHist2D = par.NrFluid2D;
-    if isfield(par, 'Nr') && isfinite(par.Nr) && par.Nr > 0
-        NrHist2D = par.Nr;
+    if isfield(par, 'Nr') && isfinite(par.Nr) && par.Nr > 0, NrHist2D = par.Nr; end
+
+    PHist      = nan(NrHist2D, numel(z), historyCapacity);
+    urCHist    = nan(NrHist2D, numel(z), historyCapacity);
+    uzCHist    = nan(NrHist2D, numel(z), historyCapacity);
+    speedCHist = nan(NrHist2D, numel(z), historyCapacity);
+    RPHist     = nan(NrHist2D, numel(z), historyCapacity);
+    ZPHist     = nan(NrHist2D, numel(z), historyCapacity);
+
+    if isfield(checkpointOut, 'PHist') && size(checkpointOut.PHist, 3) >= targetStep
+        PHist(:,:,1:targetStep) = checkpointOut.PHist(:,:,1:targetStep);
+    end
+    if isfield(checkpointOut, 'urCHist') && size(checkpointOut.urCHist, 3) >= targetStep
+        urCHist(:,:,1:targetStep) = checkpointOut.urCHist(:,:,1:targetStep);
+    end
+    if isfield(checkpointOut, 'uzCHist') && size(checkpointOut.uzCHist, 3) >= targetStep
+        uzCHist(:,:,1:targetStep) = checkpointOut.uzCHist(:,:,1:targetStep);
+    end
+    if isfield(checkpointOut, 'speedCHist') && size(checkpointOut.speedCHist, 3) >= targetStep
+        speedCHist(:,:,1:targetStep) = checkpointOut.speedCHist(:,:,1:targetStep);
+    end
+    if isfield(checkpointOut, 'RPHist') && size(checkpointOut.RPHist, 3) >= targetStep
+        RPHist(:,:,1:targetStep) = checkpointOut.RPHist(:,:,1:targetStep);
+    end
+    if isfield(checkpointOut, 'ZPHist') && size(checkpointOut.ZPHist, 3) >= targetStep
+        ZPHist(:,:,1:targetStep) = checkpointOut.ZPHist(:,:,1:targetStep);
     end
 
-    PHist = varargin{1}.PHist;
-    if size(PHist, 1) ~= NrHist2D || size(PHist, 2) ~= numel(z)
-        PHist = nan(NrHist2D, numel(z), historyCapacity);
-    end
-
-    urCHist = varargin{1}.urCHist;
-    if size(urCHist, 1) ~= NrHist2D || size(urCHist, 2) ~= numel(z)
-        urCHist = nan(NrHist2D, numel(z), historyCapacity);
-    end
-
-    uzCHist = varargin{1}.uzCHist;
-    if size(uzCHist, 1) ~= NrHist2D || size(uzCHist, 2) ~= numel(z)
-        uzCHist = nan(NrHist2D, numel(z), historyCapacity);
-    end
-
-    speedCHist = varargin{1}.speedCHist;
-    if size(speedCHist, 1) ~= NrHist2D || size(speedCHist, 2) ~= numel(z)
-        speedCHist = nan(NrHist2D, numel(z), historyCapacity);
-    end
-
-    RPHist = varargin{1}.RPHist;
-    if size(RPHist, 1) ~= NrHist2D || size(RPHist, 2) ~= numel(z)
-        RPHist = nan(NrHist2D, numel(z), historyCapacity);
-    end
-
-    ZPHist = varargin{1}.ZPHist;
-    if size(ZPHist, 1) ~= NrHist2D || size(ZPHist, 2) ~= numel(z)
-        ZPHist = nan(NrHist2D, numel(z), historyCapacity);
-    end
-
-    stateHist = cell(historyCapacity,1);
-    fluidHist = cell(historyCapacity,1);
-    deltaEHist = zeros(numel(z), historyCapacity);
-    deltaLHist = zeros(numel(z), historyCapacity);
-    pHist      = zeros(numel(z), historyCapacity);
-    tauEHist   = zeros(numel(z), historyCapacity);
-    tauLHist   = zeros(numel(z), historyCapacity);
-    uzEHist    = zeros(numel(z), historyCapacity);
-    uzLHist    = zeros(numel(z), historyCapacity);
     p2DMaxHist = nan(historyCapacity,1);
-    trEHist    = nan(2, numel(z), historyCapacity);
-    trLHist    = nan(2, numel(z), historyCapacity);
-    diagHist   = cell(historyCapacity,1);
+    p2DMaxHist(1:targetStep) = checkpointOut.p2DMaxHist(1:targetStep);
+
+    trEHist = nan(2, numel(z), historyCapacity);
+    trEHist(:,:,1:targetStep) = checkpointOut.trEHist(:,:,1:targetStep);
+
+    trLHist = nan(2, numel(z), historyCapacity);
+    trLHist(:,:,1:targetStep) = checkpointOut.trLHist(:,:,1:targetStep);
+
+    diagHist = cell(historyCapacity,1);
+    diagHist(1:targetStep) = checkpointOut.diagHist(1:targetStep);
+
     tractionCorrectionHistory = cell(historyCapacity,1);
+    if isfield(checkpointOut, 'tractionCorrectionHistory') && numel(checkpointOut.tractionCorrectionHistory) >= targetStep
+        tractionCorrectionHistory(1:targetStep) = checkpointOut.tractionCorrectionHistory(1:targetStep);
+    end
 end
+
+% =========================================================================
+% STRATEGY A SAFEGUARD & STABILITY INITIALIZATION (GLOBAL DEFAULTS)
+% =========================================================================
+if ~isfield(par, 'maxFluidPressureCap') || isempty(par.maxFluidPressureCap)
+    par.maxFluidPressureCap = 3000.0; % [Pa] Upper bound on fluid pressure
+end
+if ~isfield(par, 'maxFluidShearCap') || isempty(par.maxFluidShearCap)
+    par.maxFluidShearCap = 500.0;     % [Pa] Upper bound on shear stress
+end
+if ~isfield(par, 'v_max_cap') || isempty(par.v_max_cap)
+    par.v_max_cap = 0.020;            % [m/s] Kinematic velocity clamp (20 mm/s)
+end
+if ~isfield(par, 'solidAbsTol') || isempty(par.solidAbsTol)
+    par.solidAbsTol = 1.0e-12;        % [N] Absolute force tolerance
+end
+if ~isfield(par, 'solidFallbackAbsTol') || isempty(par.solidFallbackAbsTol)
+    par.solidFallbackAbsTol = 5.0e-9; % [N] Micro-element fallback floor (5 nN)
+end
+if ~isfield(par, 'newtonTolSolid') || isempty(par.newtonTolSolid)
+    par.newtonTolSolid = 1.0e-3;      % Relative force tolerance
+end
+if ~isfield(par, 'eta_solid') || isempty(par.eta_solid)
+    par.eta_solid = 10.0;             % [Pa*s] Transient solid viscosity
+end
+
+% Main Warm-Start Predictor Gain Factor
+alpha_pred = 0.30;
+% =========================================================================
 
 % Main Time-Stepping Loop
 while tNow < par.tEnd - timeTol
@@ -430,12 +787,10 @@ while tNow < par.tEnd - timeTol
         v_wall_E_step_init = old.v_wall_E + alpha_pred * (old.v_wall_E - zeros(size(z)));
         v_wall_L_step_init = old.v_wall_L + alpha_pred * (old.v_wall_L - zeros(size(z)));
     else
-        % Step 3+: Damped 2nd-order predictor to prevent 1/h^3 pressure spikes
         v_wall_E_step_init = old.v_wall_E + alpha_pred * (old.v_wall_E - v_wall_E_nm1);
         v_wall_L_step_init = old.v_wall_L + alpha_pred * (old.v_wall_L - v_wall_L_nm1);
     end
 
-    % STRATEGY A DIAGNOSTIC 1: Warm-Start Predictor Audit
     if tn > 0
         norm_v_prev = norm(old.v_wall_E);
         norm_v_pred = norm(v_wall_E_step_init);
@@ -451,11 +806,9 @@ while tNow < par.tEnd - timeTol
         parStep = par;
         parStep.dt = dtAttempt;
 
-        % Reset sub-pass memory to step t_n baseline for each sub-step retry
         v_wall_E_last = v_wall_E_step_init;
         v_wall_L_last = v_wall_L_step_init;
 
-        % IN-LINE OVERRIDE: FORCE DEFORMABLE LEUKOCYTE KINEMATICS
         parStep.noLeukocyte                  = false;
         parStep.useFixedCylindricalLeukocyte = false;
         parStep.rigidLeukocyte               = false;
@@ -463,7 +816,6 @@ while tNow < par.tEnd - timeTol
             parL.dt = dtAttempt;
         end
 
-        % STRICT GUARD: Force Pure Full 2D Fluid Mode every sub-step retry
         parStep.useFull2DFluid = true;
         parStep.useHybridGap1DExterior2DFluid = false;
         parStep.useGlobal2DPressureTraction = false;
@@ -487,20 +839,15 @@ while tNow < par.tEnd - timeTol
                 end
             end
 
-            % =========================================================================
-            % FIXED-POINT TRACTION COUPLING LOOP WITH ADAPTIVE RELAXATION RAMPING (OPTION B)
-            % =========================================================================
             maxCouplingIters = 35;
             couplingTol      = 1e-2;
-            omega_base       = 0.25; % Base under-relaxation factor
+            omega_base       = 0.25;
 
-            % STRATEGY A: BOUNDED AITKEN & DAMPED PREDICTOR CONTROLS
-            omega_min  = 0.08;   % Hard lower floor: prevents Aitken lock-in at 0.005
-            omega_max  = 0.50;   % Upper stability clamp for tight lubrication gaps
-            omega_init = 0.08;   % Dynamic Aitken initial relaxation factor
-            alpha_pred = 0.30;   % Damped 2nd-order kinematic warm-start predictor factor
+            omega_min  = 0.08;
+            omega_max  = 0.50;
+            omega_init = 0.08;
+            alpha_pred = 0.30;
 
-            % Persistent State Velocity Buffers across Time-Steps
             if ~exist('v_wall_E_nm1', 'var') || isempty(v_wall_E_nm1)
                 v_wall_E_nm1 = zeros(size(z));
             end
@@ -508,17 +855,18 @@ while tNow < par.tEnd - timeTol
                 v_wall_L_nm1 = zeros(size(z));
             end
 
-            % --- Sub-pass Kinematic Velocity Limiter Memory ---
-            dV_max = 1.0e-3; % Limit boundary velocity change to <= 1.0 mm/s per iteration
-            omega_effective = 0.05; % Heavy damping for initial trial
+            dV_max = 1.0e-3;
+            omega_effective = 0.05;
             omega_old       = omega_effective;
-            R_prev          = [];     % Store previous residual vector R_k-1
+            R_prev          = [];
 
-            % Re-anchor input state explicitly to old baseline for each sub-step attempt
             stateIterInput = old;
 
-            % Initialize applied tractions from stateIterInput / baseline
-            T_norm_applied = stateIterInput.p(:);
+            if isfield(stateIterInput, 'p2D') && ~isempty(stateIterInput.p2D) && isvector(stateIterInput.p2D)
+                T_norm_applied = stateIterInput.p2D(:);
+            else
+                T_norm_applied = stateIterInput.p(:);
+            end
 
             if isfield(stateIterInput, 'tauE') && ~isempty(stateIterInput.tauE)
                 T_tang_applied = stateIterInput.tauE(:);
@@ -530,19 +878,25 @@ while tNow < par.tEnd - timeTol
 
             for couplingIter = 1:maxCouplingIters
 
-                % -----------------------------------------------------------------
-                % OPTION B & ZERO-VELOCITY SOFT START FOR INITIAL TRIAL (k = 1)
-                % -----------------------------------------------------------------
                 if couplingIter == 1
                     stateIterInput.uE = old.uE;
-                    stateIterInput.uEPrev = old.uE;
+                    stateIterInput.p  = old.p(:);
+                    if isfield(old, 'uEPrev') && ~isempty(old.uEPrev)
+                        stateIterInput.uEPrev = old.uEPrev;
+                    else
+                        stateIterInput.uEPrev = old.uE;
+                    end
+
                     if isfield(old, 'uL')
                         stateIterInput.uL = old.uL;
-                        stateIterInput.uLPrev = old.uL;
+                        if isfield(old, 'uLPrev') && ~isempty(old.uLPrev)
+                            stateIterInput.uLPrev = old.uLPrev;
+                        else
+                            stateIterInput.uLPrev = old.uL;
+                        end
                     end
                 end
 
-                % 1. Solve Solid Mechanics using updated applied tractions in stateIterInput
                 if hasLeukocyte && ~rigidLeukocyte
                     stateTrial = solve_monolithic_two_solids_fsolve_timestep( ...
                         stateIterInput, meshE, interfaceE, baseE, ...
@@ -563,7 +917,6 @@ while tNow < par.tEnd - timeTol
                     end
                 end
 
-                % 2. Extract Exact Deformed Interface Radius & Raw Wall Velocity
                 [stateTrial.deltaE, stateTrial.UwE, v_E_raw] = exact_interface_radius_velocity( ...
                     meshE, stateTrial.uE, old.uE, interfaceE, z, parStep.dt, parStep);
 
@@ -593,16 +946,12 @@ while tNow < par.tEnd - timeTol
 
                 stateTrial.dt = parStep.dt;
 
-                % =========================================================================
-                % [CHECKPOINT 2 & 3] KINEMATIC WALL VELOCITY SUB-PASS LIMITER & TRACKING
-                % =========================================================================
                 diff_v_E = v_E_raw - v_wall_E_last;
                 delta_v_E_capped = sign(diff_v_E) .* min(abs(diff_v_E), dV_max);
 
                 stateTrial.v_wall_E = v_wall_E_last + delta_v_E_capped;
                 parStep.v_wall_E    = stateTrial.v_wall_E;
 
-                % --- Leukocyte Boundary Velocity Limiter ---
                 if hasLeukocyte && ~isempty(meshL) && ~(isfield(parStep, 'noLeukocyte') && parStep.noLeukocyte) ...
                         && ~use_RLout_fluid_interface_for_solid_leukocyte(parStep)
                     diff_v_L = v_L_raw - v_wall_L_last;
@@ -615,42 +964,62 @@ while tNow < par.tEnd - timeTol
                     parStep.v_wall_L    = zeros(size(z));
                 end
 
-                % Live Diagnostic Printout: Raw vs Clamped vs Iteration Memory Change
                 fprintf('    -> [Iter %02d Kinematic Audit] Endothelium: max|v_raw| = %.3e m/s | max|v_clamped| = %.3e m/s | max|dv_k| = %.3e m/s\n', ...
                     couplingIter, max(abs(v_E_raw)), max(abs(stateTrial.v_wall_E)), max(abs(diff_v_E)));
 
-                % Store clamped velocities for the next coupling iteration
                 v_wall_E_last = stateTrial.v_wall_E;
                 v_wall_L_last = stateTrial.v_wall_L;
 
-                % 3. Solve Fluid Mechanics on Updated Geometry
+                if couplingIter == 1
+                    fprintf('\n=== [STEP 14 ITER 1 INPUT AUDIT] ===\n');
+                    fprintf('  - min(deltaE)  : %.8e m\n', min(stateTrial.deltaE));
+                    fprintf('  - min(deltaL)  : %.8e m\n', min(stateTrial.deltaL));
+                    fprintf('  - min(gap)     : %.8e m\n', min(stateTrial.deltaE - stateTrial.deltaL));
+                    fprintf('  - max|v_wall_E|: %.8e m/s\n', max(abs(parStep.v_wall_E)));
+                    fprintf('  - max|v_wall_L|: %.8e m/s\n', max(abs(parStep.v_wall_L)));
+                    fprintf('  - z-grid points: %d (dz = %.3e m)\n', numel(z), parStep.dz);
+                    fprintf('=====================================\n\n');
+                end
+
                 [fluidTrial, okFluid, fluidReason] = ...
                     solve_selected_poststep_fluid(z, old, stateTrial, parStep);
                 if ~okFluid
                     error('Fluid solve failed at iteration %d: %s', couplingIter, fluidReason);
                 end
 
-                % =========================================================================
-                % FLUID COUPLING NORMAL TRACTION SPIKE GUARD
-                % =========================================================================
-                max_normal_traction_cap = 5.0e3; % Cap normal traction at 5.0 kPa (5000 Pa)
+                max_normal_traction_cap = parStep.maxFluidPressureCap;
 
+                % =========================================================================
+                % C1 CONTINUOUS (TANH) SMOOTH FLUID TRACTION SATURATION
+                % =========================================================================
+                pCap = parStep.maxFluidPressureCap; % 3000.0 Pa default
                 if isfield(fluidTrial, 'p') && ~isempty(fluidTrial.p)
                     max_p_raw = max(abs(fluidTrial.p(:)));
-                    if max_p_raw > max_normal_traction_cap
-                        fprintf('    [Traction Guard] Fluid pressure spiked (%.2f Pa > %.2f Pa). Clamping normal traction for solid solver.\n', ...
-                            max_p_raw, max_normal_traction_cap);
+                    if max_p_raw > pCap
+                        fprintf('    [Traction Guard - C1 Smooth] Peak pressure (%.2f Pa > %.2f Pa). Applying smooth tanh saturation.\n', ...
+                            max_p_raw, pCap);
 
-                        % Clamp pressure field passed forward to solid solver in next iteration
-                        fluidTrial.p = sign(fluidTrial.p) .* min(abs(fluidTrial.p), max_normal_traction_cap);
+                        % Smooth saturation function: p_sat = pCap * tanh(p / pCap)
+                        fluidTrial.p = pCap * tanh(fluidTrial.p / pCap);
                         if isfield(fluidTrial, 'P') && ~isempty(fluidTrial.P)
-                            fluidTrial.P = sign(fluidTrial.P) .* min(abs(fluidTrial.P), max_normal_traction_cap);
+                            fluidTrial.P = pCap * tanh(fluidTrial.P / pCap);
                         end
+                    end
+                end
+
+                tauCap = parStep.maxFluidShearCap; % 500.0 Pa default
+                if isfield(fluidTrial, 'tauE') && ~isempty(fluidTrial.tauE)
+                    if max(abs(fluidTrial.tauE(:))) > tauCap
+                        fluidTrial.tauE = tauCap * tanh(fluidTrial.tauE / tauCap);
+                    end
+                end
+                if isfield(fluidTrial, 'tauL') && ~isempty(fluidTrial.tauL)
+                    if max(abs(fluidTrial.tauL(:))) > tauCap
+                        fluidTrial.tauL = tauCap * tanh(fluidTrial.tauL / tauCap);
                     end
                 end
                 % =========================================================================
 
-                % 4. Apply 2D Body-Fitted Traction Correction (if enabled)
                 if isfield(parStep,'useFull2DFluid') && parStep.useFull2DFluid && ...
                         isfield(parStep,'useBodyFittedMACTractionCorrection') && ...
                         parStep.useBodyFittedMACTractionCorrection && ...
@@ -673,9 +1042,6 @@ while tNow < par.tEnd - timeTol
                     end
                 end
 
-                % =========================================================================
-                % RAW FLUID TRACTION EXTRACTION & MISMATCH DIAGNOSTIC AUDIT
-                % =========================================================================
                 if isfield(fluidTrial, 'p') && ~isempty(fluidTrial.p)
                     T_norm_fluid = fluidTrial.p(:);
                 else
@@ -688,7 +1054,6 @@ while tNow < par.tEnd - timeTol
                     T_tang_fluid = zeros(size(T_norm_fluid));
                 end
 
-                % Evaluate Mismatch between RAW fluid tractions and APPLIED tractions
                 nNodesCheck = min([numel(T_norm_fluid), numel(T_norm_applied), numel(T_tang_fluid), numel(T_tang_applied)]);
 
                 if nNodesCheck > 0
@@ -702,15 +1067,8 @@ while tNow < par.tEnd - timeTol
                     Max_stress_mismatch = NaN;
                 end
 
-                % 5. Relative Difference Check based on Normal Pressure Change
                 relDiff = max(abs(T_norm_fluid - T_norm_applied)) / max(max(abs(T_norm_fluid)), 1.0);
 
-                % DYNAMIC AITKEN UNDER-RELAXATION CONTROLLER
-                % =========================================================================
-                % Compute current normal traction residual vector across the z-grid
-                % STRATEGY A: BOUNDED DYNAMIC AITKEN RELAXATION CONTROLLER
-
-                % --- DYNAMIC AITKEN WITH EXPONENTIAL SMOOTHING FILTER ---
                 R_curr = T_norm_fluid - T_norm_applied;
 
                 if couplingIter == 1
@@ -724,24 +1082,31 @@ while tNow < par.tEnd - timeTol
                     denom = sum(delta_R.^2);
 
                     if denom > 1e-20
-                        % Aitken scalar update formula
                         mu_k = - omega_old * (sum(R_prev .* delta_R) / denom);
                         omega_raw = omega_old + mu_k;
 
-                        % Filter out high-frequency spatial noise across iterations (0.7 / 0.3 memory weighting)
                         omega_filtered = 0.30 * omega_raw + 0.70 * omega_old;
                         omega_effective = max(omega_min, min(omega_max, omega_filtered));
                     else
                         omega_raw       = omega_min;
                         omega_effective = omega_min;
                     end
+
+                    if omega_raw < parStep.omega_min
+                        fprintf('    [Aitken Controller] Iter %02d: Raw omega (%.4f) hit FLOOR clamp -> Enforced omega = %.4f\n', ...
+                            couplingIter, omega_raw, omega_effective);
+                    elseif omega_raw > parStep.omega_max
+                        fprintf('    [Aitken Controller] Iter %02d: Raw omega (%.4f) hit CEILING clamp -> Enforced omega = %.4f\n', ...
+                            couplingIter, omega_raw, omega_effective);
+                    else
+                        fprintf('    [Aitken Controller] Iter %02d: Dynamic update active -> omega = %.4f (relDiff = %.3e)\n', ...
+                            couplingIter, omega_effective, relDiff);
+                    end
                 end
 
-                % Store residual and relaxation memory for iteration k + 1
                 R_prev    = R_curr;
                 omega_old = omega_effective;
 
-                % STRATEGY A DIAGNOSTIC 2: Aitken Floor & Ceiling Audit
                 if omega_raw < omega_min
                     fprintf('    [Strategy A Aitken] Iter %02d: Raw omega (%.4f) hit FLOOR clamp -> Enforced omega = %.4f\n', ...
                         couplingIter, omega_raw, omega_effective);
@@ -752,7 +1117,7 @@ while tNow < par.tEnd - timeTol
                     fprintf('    [Strategy A Aitken] Iter %02d: Dynamic update active -> omega = %.4f\n', ...
                         couplingIter, omega_effective);
                 end
-                % Live Diagnostics
+
                 fprintf('    -> Coupling Iter %d/%d: relDiff = %.4e (tol = %.1e, omega_Aitken = %.4f)\n', ...
                     couplingIter, maxCouplingIters, relDiff, couplingTol, omega_effective);
                 fprintf('       [FSI Verification] L2 Mismatch = %.4e Pa | Max Mismatch = %.4e Pa\n', ...
@@ -760,7 +1125,6 @@ while tNow < par.tEnd - timeTol
                 fprintf('       [FSI Verification] Max Fluid Norm = %.4e Pa | Max Applied Norm = %.4e Pa\n', ...
                     max(abs(T_norm_fluid)), max(abs(T_norm_applied)));
 
-                % --- ADDED: INTERMEDIATE TANGENTIAL SHEAR & LUBRICATION MONITORING ---
                 if couplingIter == 1 || mod(couplingIter, 5) == 0 || relDiff < couplingTol
                     maxP    = max(abs(T_norm_fluid));
                     maxTauE = max(abs(T_tang_fluid));
@@ -770,28 +1134,25 @@ while tNow < par.tEnd - timeTol
 
                 if relDiff < couplingTol
                     fprintf('  [Traction Coupling] Converged at iteration %d (relDiff = %.3e)\n', couplingIter, relDiff);
-                    pRelaxedFinal = T_norm_fluid; % Assign fully converged fluid pressure
+                    pRelaxedFinal = T_norm_fluid;
                     break;
                 end
 
-                % =========================================================================
-                % APPLY AITKEN RELAXED TRACTIONS FOR NEXT ITERATION (k + 1)
-                % =========================================================================
-                % NEW / UPDATED CODE (Fully Synchronized Vector Tractions)
-                % =========================================================================
-                % APPLY AITKEN RELAXED TRACTIONS FOR NEXT ITERATION (k + 1)
-                % =========================================================================
+                % Automatic step-halving fallback if Aitken coupling diverges severely
+                if couplingIter > 10 && relDiff > 1.5
+                    error('Aitken:Divergence', ...
+                        'Coupling divergence detected (relDiff = %.3e > 1.5). Forcing time-step reduction.', relDiff);
+                end
+
                 T_norm_applied = omega_effective * T_norm_fluid + (1.0 - omega_effective) * T_norm_applied;
                 T_tang_applied = omega_effective * T_tang_fluid + (1.0 - omega_effective) * T_tang_applied;
                 pRelaxedFinal  = T_norm_applied;
 
-                % Re-initialize input state for next iteration
                 stateIterInput = old;
                 stateIterInput.p        = T_norm_applied;
                 stateIterInput.p2D      = T_norm_applied;
                 stateIterInput.pReduced = T_norm_applied;
 
-                % Synchronize Endothelial (tauE) and Leukocyte (tauL) tangential tractions
                 stateIterInput.tauE     = T_tang_applied;
                 if isfield(fluidTrial, 'tauL') && ~isempty(fluidTrial.tauL)
                     stateIterInput.tauL = fluidTrial.tauL(:);
@@ -799,7 +1160,6 @@ while tNow < par.tEnd - timeTol
                     stateIterInput.tauL = T_tang_applied;
                 end
 
-                % Warm-start solid displacements for iteration k > 1
                 stateIterInput.uE = stateTrial.uE;
                 stateIterInput.uEPrev = old.uE;
                 if isfield(stateTrial, 'uL')
@@ -812,13 +1172,9 @@ while tNow < par.tEnd - timeTol
                 end
             end
 
-            % =========================================================================
-            % [CHECKPOINT 4] ATTACH CONVERGED CLAMPED VELOCITIES TO TRIAL STATE
-            % =========================================================================
             stateTrial.v_wall_E = parStep.v_wall_E;
             stateTrial.v_wall_L = parStep.v_wall_L;
 
-            % Diagnostic printout confirming post-coupling synced values
             fprintf('\n  [Post-Coupling Handoff Audit] Step %d (t=%.4e s):\n', tn + 1, tNow + dtAttempt);
             fprintf('    -> Endothelium (v_wall_E) : max|v| = %.3e m/s, mean = %+.3e m/s\n', ...
                 max(abs(stateTrial.v_wall_E)), mean(stateTrial.v_wall_E));
@@ -829,7 +1185,6 @@ while tNow < par.tEnd - timeTol
                 fprintf('    -> Leukocyte   (v_wall_L) : FIXED / BYPASSED (v_wall_L = 0)\n\n');
             end
 
-            % Clean State Handoff: Sync converged pressure to stateTrial
             if isfield(parStep,'useFull2DFluid') && parStep.useFull2DFluid
                 stateTrial.pReduced = stateTrial.p;
                 stateTrial.p = pRelaxedFinal;
@@ -875,7 +1230,6 @@ while tNow < par.tEnd - timeTol
             [stateTrial, fluidTrial, pressureLimited, pressureLimitReason] = ...
                 apply_pressure_temporal_limiter(stateTrial, fluidTrial, old, z, parStep);
 
-            % Diagnostic: Negative Pressure Identification & Root-Cause Analysis
             if exist('fluidTrial', 'var') && isfield(fluidTrial, 'p')
                 p_field = fluidTrial.p;
                 if isfield(fluidTrial, 'P') && ~isempty(fluidTrial.P)
@@ -907,7 +1261,6 @@ while tNow < par.tEnd - timeTol
                 end
             end
 
-            % Diagnostic: Upper-Gap Mass Conservation Audit (dV_upper/dt vs Q)
             if exist('fluidTrial', 'var') && isfield(stateTrial, 'deltaE') && isfield(stateTrial, 'deltaL')
                 z_vec = z(:);
                 rE = stateTrial.deltaE(:);
@@ -1036,7 +1389,6 @@ while tNow < par.tEnd - timeTol
         uzEHist(:,newCapacity) = 0;
         uzLHist(:,newCapacity) = 0;
 
-        % Explicit dimension-locked NaN-padding for 3D tensor arrays
         PHist = cat(3, PHist, nan(NrHist2D, numel(z), growBy));
         urCHist = cat(3, urCHist, nan(NrHist2D, numel(z), growBy));
         uzCHist = cat(3, uzCHist, nan(NrHist2D, numel(z), growBy));
@@ -1052,11 +1404,9 @@ while tNow < par.tEnd - timeTol
         historyCapacity = newCapacity;
     end
 
-    % STRATEGY A: PUSH VELOCITY BUFFERS FORWARD UPON ACCEPTED TIME STEP
     if tn > 1
         v_wall_E_nm1 = old.v_wall_E;
         v_wall_L_nm1 = old.v_wall_L;
-        % STRATEGY A DIAGNOSTIC 3: Buffer Handshake Audit
         fprintf('  [Strategy A Buffer] Accepted Step %d: Advanced v_wall_E_nm1 buffer (norm = %.3e)\n', ...
             tn + 1, norm(v_wall_E_nm1));
     end
@@ -1242,6 +1592,8 @@ while tNow < par.tEnd - timeTol
             out.diagHist = diagHist(1:tn);
             out.tractionCorrectionHistory = tractionCorrectionHistory(1:tn);
             out.par = par;
+            out.baseE = baseE;                                   % [1001 FIX]
+            if exist('baseL','var') && ~isempty(baseL), out.baseL = baseL; end  % [1001 FIX]
             out.meshE = meshE;
             out.interfaceE = interfaceE;
             if exist('meshL','var') && ~isempty(meshL)
@@ -1291,13 +1643,22 @@ while tNow < par.tEnd - timeTol
     else
         dtNext = par.dt;
     end
+
+    % [1001] Optional short test runs: stop after a given step WITHOUT changing
+    % par.tEnd (SOFTLUBE_NSTEPS shortens tEnd, which makes the last step use
+    % dt = tEnd - t (round-off different from dt) and stores the short tEnd in
+    % the .mat file). Only active when SOFTLUBE_STOP_AFTER_STEP is set.
+    stopAfter1001 = str2double(getenv('SOFTLUBE_STOP_AFTER_STEP'));
+    if isfinite(stopAfter1001) && tn >= stopAfter1001
+        fprintf('[STOP AFTER STEP] Stopping after step %d (SOFTLUBE_STOP_AFTER_STEP).\n', tn);
+        break;
+    end
 end
 
 if ~stoppedEarly
     stopStep = tn;
 end
 
-% Final Array Truncation
 if stopStep < 1
     safeStep = 1;
 else
@@ -1376,6 +1737,8 @@ out.trLHist = trLHist;
 out.diagHist = diagHist;
 out.tractionCorrectionHistory = tractionCorrectionHistory;
 out.par = par;
+out.baseE = baseE;                                   % [1001 FIX]
+if exist('baseL','var') && ~isempty(baseL), out.baseL = baseL; end  % [1001 FIX]
 out.meshE = meshE;
 out.interfaceE = interfaceE;
 if exist('meshL','var') && ~isempty(meshL)
@@ -1505,11 +1868,17 @@ g1D = out.global1D;
 if isstruct(g1D) && isfield(g1D, 'pHist')
     g1D.pBlanked = g1D.pHist;
     if isfield(out, 'deltaEHist') && isfield(out, 'deltaLHist')
-        contact_mask = (out.deltaEHist - out.deltaLHist) <= par.gapFloor;
+        gapFloor1001 = 1.0e-8;                             % [1001 FIX] same value as parStep.gapFloor
+        if isfield(par, 'gapFloor') && ~isempty(par.gapFloor), gapFloor1001 = par.gapFloor; end
+        contact_mask = (out.deltaEHist - out.deltaLHist) <= gapFloor1001;
         g1D.pBlanked(contact_mask) = NaN;
     end
 end
 end
+% ========================================================================
+% HELPER FUNCTIONS
+% ========================================================================
+
 
 function mesh = relax_surface_mesh_nodes(mesh, factor)
 if nargin < 2, factor = 0.1; end
@@ -1762,13 +2131,11 @@ function state = initial_state(z, par, meshE, uE_pre, deltaE_pre, ...
     meshL, interfaceL, uL_pre, deltaL_pre)
 state = struct();
 
-% Shared global coordinate grid
 zVec = z(:);
 
 state.UwL = zeros(size(zVec));
 state.UwE = zeros(size(zVec));
 
-% Initial uniform z coordinate vectors for endothelium and leukocyte
 state.zE = zVec;
 
 if isfield(par, 'noLeukocyte') && par.noLeukocyte
@@ -1800,3 +2167,8 @@ state.uEPrev = uE_pre;
 state.pPrev = state.p;
 state.dtPrev = par.dt;
 end
+
+
+
+
+
