@@ -12,10 +12,8 @@
 Every version is a commit in the repository's history (Commits / `git log`); to go back to one:
 `git checkout <commit>` (look) or `git revert` / `git reset --hard <commit>` (restore).
 
-**Inputs (not in the repositories):** `case_7_t_step14.mat`, `solid_endothelium_P300.mat`, `solid_leukocyte_P300.mat`
-from the 0929 / 1001_v1 packages, in the same folder as the code. All runs restart from step 13 of `case_7_t_step14.mat`.
-Run options (environment variables, optional): `SOFTLUBE_STOP_AFTER_STEP=<n>`, `RESTART_FILE`, `RESTART_STEP`,
-`FRESH_START=1` (parallel run files), `NUM_PROCS=<workers>` (parallel run files).
+**Inputs:** `solid_endothelium_P300.mat` and `solid_leukocyte_P300.mat` are in this repository; `case_7_t_step14.mat` (restart file, not in the repository) comes from the 0929 / 1001_v1 packages and goes in the same folder as the code. The run restarts from step 13 of `case_7_t_step14.mat`.
+Run option (environment variable, optional): `SOFTLUBE_STOP_AFTER_STEP=<n>` (stop after step n).
 
 
 ## Run
