@@ -1644,15 +1644,6 @@ while tNow < par.tEnd - timeTol
         dtNext = par.dt;
     end
 
-    % [1001] Optional short test runs: stop after a given step WITHOUT changing
-    % par.tEnd (SOFTLUBE_NSTEPS shortens tEnd, which makes the last step use
-    % dt = tEnd - t (round-off different from dt) and stores the short tEnd in
-    % the .mat file). Only active when SOFTLUBE_STOP_AFTER_STEP is set.
-    stopAfter1001 = str2double(getenv('SOFTLUBE_STOP_AFTER_STEP'));
-    if isfinite(stopAfter1001) && tn >= stopAfter1001
-        fprintf('[STOP AFTER STEP] Stopping after step %d (SOFTLUBE_STOP_AFTER_STEP).\n', tn);
-        break;
-    end
 end
 
 if ~stoppedEarly
